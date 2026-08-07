@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spec Review Bench — decision-mill</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <header id="brand">
+      <h1>SPEC&nbsp;REVIEW</h1>
+      <div class="sub" id="project-name" hidden></div>
+    </header>
+    <div id="global-search">
+      <button id="search-trigger" type="button" aria-label="Global search"><span>search everything…</span><kbd>⌘K</kbd></button>
+    </div>
+    <nav id="spec-list" aria-label="Specs"></nav>
+    <div id="bucket-totals" aria-label="Totals across all specs"></div>
+  </aside>
+
+  <main id="main">
+    <div id="spec-header"></div>
+    <div id="toolbar">
+      <div id="filters" aria-label="Filters"></div>
+      <div id="progress"></div>
+    </div>
+    <div id="items"></div>
+  </main>
+
+  <aside id="code-panel" hidden>
+    <header>
+      <span id="code-title" class="mono"></span>
+      <button id="code-close" title="Close (Esc)">×</button>
+    </header>
+    <pre id="code-body" class="mono"></pre>
+  </aside>
+</div>
+<div id="search-modal" hidden>
+  <div class="sm-backdrop"></div>
+  <div class="sm-panel" role="dialog" aria-label="Global search">
+    <input id="search-input" type="search" placeholder="search all specs — ids, titles, prose, decisions, notes…" spellcheck="false" autocomplete="off">
+    <div id="search-results"></div>
+    <div class="sm-hint">↵ open top result · esc close</div>
+  </div>
+</div>
+<script src="/vendor/marked.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

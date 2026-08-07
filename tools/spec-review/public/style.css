@@ -1,0 +1,232 @@
+/* Spec Review Bench — dark ledger. The only saturated color is a verdict. */
+:root {
+  --bg: #14171d;
+  --panel: #1a1e26;
+  --panel-2: #20252f;
+  --line: #2b313d;
+  --ink: #d7dce5;
+  --muted: #8b93a2;
+  --faint: #5c6472;
+  --keep: #74b06a;
+  --toss: #d0654a;
+  --unify: #5b9dd9;
+  --metric: #d9a441;
+  --accent: var(--unify);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: -apple-system, "Segoe UI", system-ui, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; }
+/* Author `display: flex` on .detail-row / #code-panel beat the UA sheet's
+   [hidden] { display: none }, so the decision detail row and the code panel were
+   permanently visible. Author-level !important settles it. */
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.55 var(--sans); }
+.mono { font-family: var(--mono); }
+button { font: inherit; cursor: pointer; }
+input, textarea { font: inherit; color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; }
+input:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--unify); outline-offset: 1px; }
+
+#app { display: grid; grid-template-columns: 252px 1fr; height: 100vh; }
+#app.with-code { grid-template-columns: 252px minmax(420px, 1fr) minmax(360px, 44%); }
+
+/* ---- sidebar ---- */
+#sidebar { display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--panel); overflow-y: auto; }
+#brand { padding: 18px 16px 12px; border-bottom: 1px solid var(--line); }
+#brand h1 { font: 700 15px/1 var(--mono); letter-spacing: .22em; }
+#brand .sub { color: var(--faint); font-size: 11.5px; margin-top: 5px; letter-spacing: .04em; }
+#spec-list { flex: 1; padding: 8px; }
+.spec-row { display: block; width: 100%; text-align: left; background: none; border: 1px solid transparent; border-radius: 6px; padding: 9px 10px; color: var(--ink); margin-bottom: 2px; }
+.spec-row:hover { background: var(--panel-2); }
+.spec-row.active { background: var(--panel-2); border-color: var(--line); }
+.spec-row .name { font-size: 13px; }
+.spec-row .meter { height: 4px; background: #101318; border-radius: 2px; margin-top: 7px; overflow: hidden; display: flex; }
+.spec-row .meter i { display: block; height: 100%; }
+.spec-row .meter .m-decided { background: var(--keep); }
+.m-team { background: #3e9db0; }
+/* deferred is striped so it can never be confused with the dark unfilled (open) track */
+.m-deferred { background: repeating-linear-gradient(135deg, #8b93a2 0 3px, #4a505c 3px 6px); }
+.stats .open-count { color: var(--ink); font-weight: 600; }
+
+/* ---- program-wide bucket totals ---- */
+#bucket-totals { border-top: 1px solid var(--line); padding: 10px 16px 14px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+#bucket-totals .bt-head { color: var(--faint); letter-spacing: .06em; margin-bottom: 6px; }
+#bucket-totals .bt-row { display: flex; align-items: center; gap: 7px; padding: 1.5px 0; }
+#bucket-totals .bt-label { flex: 1; }
+#bucket-totals .bt-n { color: var(--ink); font-weight: 600; }
+#bucket-totals .bt-n.hot { color: var(--metric); }
+#bucket-totals .dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.dot.t-decided { background: var(--keep); }
+.dot.t-open { background: #101318; border: 1px solid var(--faint); }
+.dot.t-metrics { background: var(--metric); }
+.dot.t-team { background: #3e9db0; }
+.dot.t-deferred { background: repeating-linear-gradient(135deg, #8b93a2 0 3px, #4a505c 3px 6px); }
+.spec-row .meter .m-metrics { background: var(--metric); }
+.spec-row .stats { color: var(--faint); font-size: 11px; margin-top: 5px; font-family: var(--mono); }
+
+/* ---- main ---- */
+#main { overflow-y: auto; padding: 0 26px 60px; }
+#spec-header { padding: 20px 0 4px; }
+#spec-header h2 { font-size: 19px; font-weight: 650; }
+#spec-header .meta { color: var(--muted); font-size: 12px; margin-top: 4px; font-family: var(--mono); }
+#spec-header .parse-errors { margin-top: 8px; color: var(--toss); font-size: 12.5px; font-family: var(--mono); }
+#spec-header .spec-warnings { margin-top: 8px; color: var(--metric); font-size: 12px; font-family: var(--mono); opacity: .9; }
+#spec-header .spec-warnings div, #spec-header .parse-errors div { margin-left: 10px; }
+#toolbar { position: sticky; top: 0; z-index: 5; background: var(--bg); display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+/* Four controls, not eight chips: All / Open / Decided + one kind select. */
+#filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.filter { background: var(--panel); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font-size: 12px; }
+.filter.on { color: var(--ink); border-color: var(--muted); }
+.kind-select { margin-left: 6px; background: var(--panel); color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; font: inherit; font-size: 12px; }
+.kind-select:focus-visible { outline: 2px solid var(--unify); outline-offset: 1px; }
+#progress { color: var(--faint); font-size: 12px; font-family: var(--mono); white-space: nowrap; }
+/* Needs-metrics is a status flag, not a verdict — it gets a count link here rather
+   than a chip of its own. */
+#progress .metrics-link { color: var(--faint); text-decoration: none; border-bottom: 1px dotted var(--faint); }
+#progress .metrics-link:hover { color: var(--metric); border-bottom-color: var(--metric); }
+#progress .metrics-link.on { color: var(--metric); border-bottom-style: solid; }
+
+/* ---- items ---- */
+/* No status spine and no dashed rules inside the card: status is already carried
+   by the chip and the verdict stamp, and a 10px saturated stripe read as an error
+   banner. Focus is a border-colour change only. */
+.item { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); margin: 14px 0; }
+.item.focused { border-color: var(--unify); }
+.item .body { padding: 13px 16px 15px; min-width: 0; }
+.item-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.item-id { font: 600 12px var(--mono); color: var(--muted); letter-spacing: .05em; }
+.item-title { font-weight: 630; font-size: 14.5px; }
+.chips { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.chip { font: 500 10.5px var(--mono); letter-spacing: .06em; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 1px 7px; text-transform: uppercase; }
+.chip.conf-low { color: var(--metric); border-color: color-mix(in srgb, var(--metric) 40%, var(--line)); }
+.chip.proposed-toss { color: var(--toss); border-color: color-mix(in srgb, var(--toss) 40%, var(--line)); }
+/* needs-metrics toggle: lives with the tags because it is a flag for a later agent,
+   not one of the reviewer's three verdicts. Quiet until it is on. */
+button.chip.mchip { background: none; color: var(--faint); border-style: dashed; text-transform: none; letter-spacing: .04em; }
+button.chip.mchip:hover { color: var(--metric); border-color: color-mix(in srgb, var(--metric) 50%, var(--line)); }
+button.chip.mchip.on { background: color-mix(in srgb, var(--metric) 18%, transparent); border-style: solid; border-color: color-mix(in srgb, var(--metric) 55%, var(--line)); color: var(--metric); }
+
+/* verdict stamp — the signature */
+.stamp { display: inline-flex; align-items: center; gap: 8px; font: 700 12px var(--mono); letter-spacing: .14em; padding: 4px 12px; border: 2px solid; border-radius: 4px; transform: rotate(-1.2deg); margin: 10px 0 2px; }
+.stamp small { font-weight: 400; letter-spacing: .02em; opacity: .75; }
+.stamp.v-keep { color: var(--keep); border-color: var(--keep); }
+.stamp.v-toss { color: var(--toss); border-color: var(--toss); }
+.stamp.v-unify { color: var(--unify); border-color: var(--unify); }
+.stamp.v-defer, .stamp.v-reject, .stamp.v-file { color: var(--muted); border-color: var(--muted); }
+
+/* explanation — plain English for whoever is deciding; deliberately larger and
+   softer than the mono evidence lines under it. */
+.explanation { margin-top: 10px; max-width: 68ch; font-size: 14.5px; line-height: 1.6; color: var(--ink); background: var(--panel-2); border-radius: 6px; padding: 9px 12px; }
+
+.prose { color: var(--ink); margin-top: 8px; max-width: 78ch; }
+.prose p { margin: 7px 0; }
+.prose code { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); border-radius: 3px; padding: 1px 5px; }
+.prose table { border-collapse: collapse; font-size: 12.5px; margin: 8px 0; display: block; overflow-x: auto; }
+.prose th, .prose td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; }
+.prose ul, .prose ol { padding-left: 22px; }
+/* Inline citation: same target as an evidence row, so it reads as the same thing. */
+.prose .loc-link { color: var(--unify); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--unify) 35%, transparent); font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+.prose .loc-link:hover { border-bottom-color: var(--unify); }
+
+/* ---- metrics strip ---- */
+/* Grounding numbers, scannable in one glance. Deliberately not a table. */
+.metrics { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 26px; margin: 11px 0 2px; padding: 10px 13px; border: 1px solid color-mix(in srgb, var(--metric) 28%, var(--line)); border-left: 3px solid var(--metric); border-radius: 6px; background: color-mix(in srgb, var(--metric) 6%, var(--panel-2)); }
+.metrics .mstat { min-width: 0; }
+.metrics .mlabel { color: var(--muted); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; }
+.metrics .mvalue { font: 650 19px/1.2 var(--mono); color: var(--ink); margin-top: 3px; }
+.metrics .mnote { color: var(--faint); font-size: 11.5px; margin-top: 2px; }
+.metrics .msrc { margin-left: auto; color: var(--faint); font: 11px var(--mono); letter-spacing: .04em; }
+
+.evidence { margin-top: 10px; display: flex; flex-direction: column; gap: 3px; }
+.ev { display: flex; gap: 8px; align-items: baseline; background: none; border: none; color: var(--unify); text-align: left; padding: 2px 0; font: 12.5px var(--mono); }
+.ev:hover .loc { text-decoration: underline; }
+.ev .note { color: var(--faint); font-family: var(--sans); font-size: 12px; }
+
+.actions { display: flex; gap: 7px; align-items: center; margin-top: 13px; flex-wrap: wrap; }
+.actions .lbl { color: var(--faint); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; margin-right: 2px; }
+.btn { background: var(--panel-2); border: 1px solid var(--line); color: var(--ink); border-radius: 5px; padding: 5px 13px; font-size: 12.5px; }
+.btn:hover { border-color: var(--muted); }
+.btn.b-keep:hover { border-color: var(--keep); color: var(--keep); }
+.btn.b-toss:hover { border-color: var(--toss); color: var(--toss); }
+.btn.b-unify:hover { border-color: var(--unify); color: var(--unify); }
+.btn.ghost { background: none; border-color: transparent; color: var(--faint); }
+.btn.ghost:hover { color: var(--muted); }
+/* Deciding is one click now, so undoing has to stay visible rather than hide as a
+   ghost button — a fat-fingered verdict must be cheap to take back. */
+.btn.undo { margin-left: auto; background: none; border-color: color-mix(in srgb, var(--toss) 45%, var(--line)); color: var(--muted); }
+.btn.undo:hover { color: var(--toss); border-color: var(--toss); }
+.btn:disabled { opacity: .5; cursor: default; }
+/* Unify is the only verdict that needs a target; it gets a target-only input, never
+   a second rationale box. */
+.unify-row { margin-top: 9px; display: flex; gap: 8px; align-items: center; }
+.unify-row input { flex: 1; max-width: 320px; font-size: 12.5px; }
+.unify-row .pending { color: var(--unify); font-size: 12px; letter-spacing: .04em; white-space: nowrap; }
+.detail-hint { margin-top: 5px; color: var(--metric); font-size: 12px; }
+.detail-hint.note { color: var(--muted); }
+.prose-raw { white-space: pre-wrap; font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+
+.notes { margin-top: 14px; }
+.note-row { font-size: 13px; padding: 4px 0; }
+.note-row .nmeta { color: var(--faint); font-family: var(--mono); font-size: 10.5px; margin-top: 2px; }
+.note-row.sys .ntext { color: var(--faint); font-size: 11.5px; }
+.note-row .vtag { font: 700 11px var(--mono); letter-spacing: .12em; margin-right: 8px; }
+.vtag.v-keep { color: var(--keep); }
+.vtag.v-toss { color: var(--toss); }
+.vtag.v-unify { color: var(--unify); }
+.vtag.v-rec { color: var(--muted); border: 1px solid var(--muted); border-radius: 3px; padding: 0 5px; }
+.vtag.v-defer, .vtag.v-reject, .vtag.v-file { color: var(--muted); }
+.note-add { display: flex; gap: 8px; margin-top: 7px; }
+.note-add textarea { flex: 1; min-height: 34px; resize: vertical; font-size: 12.5px; }
+
+/* ---- code panel ---- */
+#code-panel { border-left: 1px solid var(--line); background: #12151a; display: flex; flex-direction: column; min-width: 0; }
+#code-panel header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+#code-title { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#code-close { background: none; border: none; color: var(--muted); font-size: 18px; padding: 0 4px; }
+#code-body { flex: 1; overflow: auto; padding: 12px 0; font-size: 12px; line-height: 1.5; }
+.cl { display: flex; white-space: pre; }
+.cl .ln { width: 54px; flex: none; text-align: right; padding-right: 14px; color: var(--faint); user-select: none; }
+.cl.hl { background: color-mix(in srgb, var(--unify) 14%, transparent); }
+.cl.hl .ln { color: var(--unify); }
+.cl a { color: var(--unify); text-decoration: none; }
+.cl a:hover { text-decoration: underline; }
+.code-msg { padding: 8px 14px; font-size: 12px; color: var(--muted); white-space: pre-wrap; font-family: var(--sans); }
+.code-msg.err { color: var(--toss); }
+.code-msg.warn { color: var(--metric); }
+.code-msg a { color: var(--unify); font-family: var(--mono); }
+
+.empty { color: var(--faint); padding: 60px 0; text-align: center; }
+@media (max-width: 1100px) { #app.with-code { grid-template-columns: 200px 1fr; } #code-panel { position: fixed; right: 0; top: 0; bottom: 0; width: min(560px, 92vw); z-index: 20; box-shadow: -12px 0 40px rgba(0,0,0,.5); } }
+@media (prefers-reduced-motion: no-preference) { .item { transition: border-color .12s; } }
+
+/* ---- global search: command palette ---- */
+#global-search { padding: 10px 12px 4px; }
+#search-trigger { display: flex; align-items: center; justify-content: space-between; width: 100%; background: var(--panel-2); color: var(--faint); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 12.5px; }
+#search-trigger:hover { color: var(--muted); border-color: var(--muted); }
+#search-trigger kbd { font: 11px var(--mono); border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; color: var(--faint); }
+
+#search-modal { position: fixed; inset: 0; z-index: 100; }
+#search-modal .sm-backdrop { position: absolute; inset: 0; background: rgba(8, 10, 14, .62); backdrop-filter: blur(2px); }
+#search-modal .sm-panel { position: relative; margin: 9vh auto 0; width: min(720px, 92vw); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 24px 70px rgba(0,0,0,.6); overflow: hidden; display: flex; flex-direction: column; max-height: 72vh; }
+#search-modal input { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: var(--panel); font-size: 15px; padding: 14px 18px; }
+#search-modal input:focus { outline: none; }
+#search-results { overflow-y: auto; flex: 1; }
+.sr { display: block; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); padding: 10px 18px; color: var(--ink); }
+.sr:last-child { border-bottom: 0; }
+.sr:hover, .sr:focus-visible { background: var(--panel-2); }
+.sr-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.sr-id { font: 600 11px var(--mono); color: var(--unify); }
+.sr-title { font-size: 13.5px; font-weight: 600; }
+.sr-meta { margin-left: auto; color: var(--faint); font: 11px var(--mono); }
+.sr-snip { display: block; color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+.sr-empty { padding: 14px 18px; color: var(--faint); font-size: 12.5px; }
+.sm-hint { border-top: 1px solid var(--line); padding: 7px 18px; color: var(--faint); font: 11px var(--mono); }
+.item.flash { border-color: var(--metric); box-shadow: 0 0 0 1px var(--metric); }
+
+/* ---- team card: agenda-first layout ---- */
+.explanation.agenda { white-space: pre-line; border-left: 3px solid #3e9db0; max-width: 76ch; font-size: 14.5px; }
+.agenda-eyebrow { font: 700 10.5px var(--mono); letter-spacing: .18em; text-transform: uppercase; color: #3e9db0; margin-bottom: 6px; }
+.deep-dive { margin-top: 10px; }
+.deep-dive summary { cursor: pointer; color: var(--faint); font: 12px var(--mono); padding: 4px 0; }
+.deep-dive summary:hover { color: var(--muted); }
+.deep-dive[open] summary { color: var(--muted); margin-bottom: 4px; }
