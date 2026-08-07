@@ -67,10 +67,12 @@ All of them are read and normalized in one place, [`lib/config.js`](lib/config.j
   toggles that status; it is a flag for a later metrics agent, not a verdict, which is
   why it is not among the decide buttons. **Team** parks an item for a live
   walkthrough, likewise not a verdict.
-- Spec vocabulary is unchanged by the presentation: Change writes `decision: toss` and
-  displays as `CHANGE` (do not carry this behavior forward as-is). The legacy values
-  `accept`, `reject` and `file` still parse and render (`accept` reads as a Keep), but
-  the UI no longer offers the first two.
+- Stored ids match the buttons: Keep writes `decision: keep` (good as-is, with the
+  recommendation on record) and Change writes `decision: change` (needs adjustment per
+  the recorded recommendation — never delete by itself). The legacy values `toss`
+  (old spelling of `change`), `accept` (reads as a Keep), `reject` and `file` still
+  parse and render, and the server normalizes `toss`/`accept` to `change`/`keep` on
+  write, but the UI no longer offers them.
 
 ## Validate
 
@@ -81,7 +83,8 @@ node validate.js --strict     # warnings become failures — the gate before del
 ```
 
 Errors fail the run; warnings (vocabulary drift such as `confidence: medium`,
-un-padded ids, unparseable `lines`, a `toss` with no prefixed detail) are printed but
+un-padded ids, unparseable `lines`, a `change` with no prefixed detail, a legacy
+`toss`/`accept` stored value) are printed but
 do not, unless `--strict`. The UI shows the same warnings in the spec header.
 
 ## Agent-facing writes

@@ -37,7 +37,7 @@ cannot collide. Each brief carries:
   line numbers is nearly useless to the reviewer. Cite the lines.
 - **The confidence rule**: `confidence` is a real signal, not a formality. `low` means
   "I am guessing", and the reviewer treats it that way — combined with
-  `proposed: toss` it defaults to keep.
+  a `change`-class proposal it defaults to keep.
 - **The silence rule**: unclear, missing, or forced-to-guess findings are
   *deliverables*, not embarrassments. They become `UNK` items or rules in your agent
   instructions file. An agent that invents a pattern to avoid reporting a gap has
@@ -115,7 +115,7 @@ the truth.
 The brief for a consuming agent says:
 
 - `decision: null` or `status: open` means **stop and ask**. Not "use your judgment".
-- `decision: toss` does **not** mean delete. Read `decision_detail`: only a
+- `decision: change` (legacy spelling: `toss`) does **not** mean delete. Read `decision_detail`: only a
   `remove:` prefix authorizes removing a capability; `change:` is a redesign
   instruction and the capability stays.
 - A `FEAT` item's decision is the **scope of record**. A `DIV` note may not widen or
@@ -132,7 +132,7 @@ Before a capability's spec goes:
 | --------- | -------- |
 | `INV` kept | a test in the new suite, or your invariant register |
 | `FC` | an issue, or a regression test |
-| `FEAT` tossed with `remove:` | a removal record (below) |
+| `FEAT` changed with `remove:` | a removal record (below) |
 | `DIV` unified | the delivering change's commit message / ADR |
 | architectural call | an ADR |
 | `UNK` never grounded | an open question in your tracker, explicitly |
@@ -143,7 +143,7 @@ Then delete the spec. The gate:
 node tools/spec-review/validate.js --strict   # must exit 0
 ```
 
-`--strict` fails on any `toss` whose `decision_detail` is missing or unprefixed —
+`--strict` fails on any `change` (or legacy `toss`) whose `decision_detail` is missing or unprefixed —
 i.e. on exactly the decisions that would become unreadable the moment the prose
 disappears.
 

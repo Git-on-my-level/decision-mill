@@ -149,7 +149,7 @@ title: Over the per-list cap, creates are dropped with a 200
 explanation: >
   Past 500 todos in one list the server throws the new todo away but still answers
   success, so it appears in the app until the next refresh and then vanishes.
-proposed: toss
+proposed: change
 confidence: high
 status: open
 decision: null

@@ -15,7 +15,12 @@ const NEAR_HEADING_RE = /^###\s+(?:(?:DIV|INV|FC|UNK|FEAT|GEN)\b|[A-Z]{2,5}-[A-Z
 // Vocabularies from specs/FORMAT.md v1.
 export const KINDS = new Set(["divergence", "invariant", "failure-case", "unknown", "feature", "general"]);
 export const STATUSES = new Set(["open", "decided", "needs-metrics", "team"]);
-export const SIMPLE_DECISIONS = new Set(["keep", "toss", "accept", "reject", "defer", "file"]);
+export const SIMPLE_DECISIONS = new Set(["keep", "change", "toss", "accept", "reject", "defer", "file"]);
+// Canonical vocabulary is keep|change|defer|file|unify-on-<x>. `toss` and `accept`
+// are legacy spellings (the UI always said "Change"/"Keep" but stored these ids) —
+// parsers must still accept and render them; writers normalize through this map.
+export const LEGACY_DECISIONS = { toss: "change", accept: "keep" };
+export const canonicalDecision = (d) => LEGACY_DECISIONS[d] || d;
 export const CONFIDENCES = new Set(["high", "med", "low"]);
 export const UNIFY_RE = /^unify-on-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const LINES_RE = /^\d+(-\d+)?(,\d+(-\d+)?)*$/;

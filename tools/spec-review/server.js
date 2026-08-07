@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import url from "node:url";
 import { execFileSync } from "node:child_process";
-import { parseSpec, updateItem, validateSpecText, isValidDecision, LINES_RE, dumpMeta } from "./lib/parser.js";
+import { parseSpec, updateItem, validateSpecText, isValidDecision, canonicalDecision, LINES_RE, dumpMeta } from "./lib/parser.js";
 import { SPECS_DIR, REPO_ROOT, PORT, EXCLUDED, LOCATOR_PREFIX, LOCATOR_SCHEME, PROJECT_NAME, REVIEWER } from "./lib/config.js";
 
 const HERE = path.dirname(url.fileURLToPath(import.meta.url));
@@ -200,9 +200,12 @@ const server = http.createServer(async (req, res) => {
       let updated;
       if (body.action === "decision") {
         if (!body.decision) return json(res, 400, { error: "decision required" });
-        const decision = String(body.decision);
+        // Legacy spellings (toss/accept) are accepted from old clients but the
+        // stored value is always canonical — Keep = good as-is, Change = needs
+        // adjustment per the recorded recommendation.
+        const decision = canonicalDecision(String(body.decision));
         if (!isValidDecision(decision)) {
-          return json(res, 400, { error: `invalid decision '${decision}' — want keep|toss|accept|reject|defer|file|unify-on-<slug>` });
+          return json(res, 400, { error: `invalid decision '${decision}' — want keep|change|defer|file|unify-on-<slug>` });
         }
         const detail = body.decision_detail ? String(body.decision_detail).trim() : "";
         updated = updateItem(text, id, (meta) => {

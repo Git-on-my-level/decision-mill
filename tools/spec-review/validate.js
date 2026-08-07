@@ -29,16 +29,20 @@ for (const f of fs.readdirSync(SPECS_DIR).filter((f) => f.endsWith(".md") && !EX
   const { items, errors, warnings } = validateSpecText(fs.readFileSync(path.join(SPECS_DIR, f), "utf8"), slug);
   const errs = [...errors];
   if (CHECK_LOCATORS) errs.push(...checkLocators(items, existsInRepo));
-  // A bare `toss` is unreadable once the spec is disposed of and only the decision
-  // survives. Every toss needs a decision_detail with a disambiguating prefix
-  // (see FORMAT.md).
-  const TOSS_PREFIX = /^(remove|change|resolved|moot):/;
+  // A bare `change` is unreadable once the spec is disposed of and only the
+  // decision survives. Every change needs a decision_detail with a disambiguating
+  // prefix (see FORMAT.md). `toss` is the legacy spelling of `change`.
+  const CHANGE_PREFIX = /^(remove|change|resolved|moot):/;
   for (const it of items) {
-    if (it.meta.decision === "toss") {
+    if (it.meta.decision === "change" || it.meta.decision === "toss") {
       const detail = (it.meta.decision_detail || "").trim();
-      if (!detail) warnings.push(`${it.id}: toss with null decision_detail (required before spec deletion)`);
-      else if (!TOSS_PREFIX.test(detail)) warnings.push(`${it.id}: toss detail lacks remove:/change:/resolved:/moot: prefix`);
+      if (!detail) warnings.push(`${it.id}: ${it.meta.decision} with null decision_detail (required before spec deletion)`);
+      else if (!CHANGE_PREFIX.test(detail)) warnings.push(`${it.id}: ${it.meta.decision} detail lacks remove:/change:/resolved:/moot: prefix`);
     }
+    // Legacy stored spellings — the UI always displayed Change/Keep for these.
+    // Repair the data (toss → change, accept → keep) so ids match the UI.
+    if (it.meta.decision === "toss") warnings.push(`${it.id}: legacy decision 'toss' — repair to 'change'`);
+    if (it.meta.decision === "accept") warnings.push(`${it.id}: legacy decision 'accept' — repair to 'keep'`);
     // Delegated-ownership rule (opt-in, DELEGATED_PATHS): an item whose evidence lives
     // entirely under code owned by another team describes a mechanism this review
     // cannot decide. `file` is the only verdict that gives it an owner; keep/toss/unify

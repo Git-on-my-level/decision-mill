@@ -207,14 +207,15 @@ function renderItems() {
   applyFocus();
 }
 
-// The spec vocabulary is unchanged; only its presentation is plain English.
-// `accept` is a legacy value the UI no longer writes — it reads as a Keep.
+// Stored ids now match the buttons: Keep = good as-is (with recommendation),
+// Change = needs adjustment per the recorded recommendation. `toss` and `accept`
+// are legacy stored values the UI no longer writes — they read as Change/Keep.
 const VERDICT_LABEL = { toss: "CHANGE", accept: "KEEP" };
-const VERDICT_CLASS = { accept: "keep" };
+const VERDICT_CLASS = { accept: "keep", change: "toss" }; // change reuses toss's palette
 
 function verdictCls(decision) {
   const base = String(decision).split("-")[0];
-  const known = ["keep", "toss", "unify", "accept", "reject", "defer", "file"].includes(base) ? base : "defer";
+  const known = ["keep", "change", "toss", "unify", "accept", "reject", "defer", "file"].includes(base) ? base : "defer";
   return VERDICT_CLASS[known] || known;
 }
 
@@ -385,7 +386,7 @@ function renderItem(it) {
         <span class="item-title">${esc(it.title)}</span>
         <span class="chips">
           <span class="chip">${esc(KIND_LABEL[it.kind] || it.kind || "?")}</span>
-          ${meta.proposed && meta.proposed !== "n/a" ? `<span class="chip ${meta.proposed === "toss" ? "proposed-toss" : ""}">→ ${esc(meta.proposed)}</span>` : ""}
+          ${meta.proposed && meta.proposed !== "n/a" ? `<span class="chip ${meta.proposed === "toss" || meta.proposed === "change" ? "proposed-toss" : ""}">→ ${esc(meta.proposed === "toss" ? "change" : meta.proposed)}</span>` : ""}
           ${meta.confidence ? `<span class="chip conf-${esc(slugify(meta.confidence))}">${esc(meta.confidence)}</span>` : ""}
           ${isMetrics ? "" : `<span class="chip">${esc(meta.status || "open")}</span>`}
           ${isGeneral ? "" : `<button class="chip mchip${isMetrics ? " on" : ""}" data-status="${isMetrics ? "open" : "needs-metrics"}"
@@ -406,7 +407,7 @@ function renderItem(it) {
       <div class="actions">
         <span class="lbl">decide</span>
         <button class="btn b-keep" data-d="keep" type="button">Keep</button>
-        <button class="btn b-toss" data-d="toss" type="button">Change</button>
+        <button class="btn b-toss" data-d="change" type="button">Change</button>
         <button class="btn ghost" data-d="defer" type="button">Defer</button>
         <button class="btn ghost b-team" data-team type="button" aria-pressed="${(meta.status || "open") === "team"}"
           title="park for the live team walkthrough — not a verdict">${(meta.status || "open") === "team" ? "✓ Team" : "Team"}</button>
@@ -490,10 +491,10 @@ function renderItem(it) {
 
   let writing = false; // one-click deciding must not double-write on a double-click
   const decide = async (decision, detail) => {
-    // "Change" (stored: toss) never means delete. Auto-prefix the reviewer's detail
+    // "Change" (stored: change) never means delete. Auto-prefix the reviewer's detail
     // with the FORMAT.md disambiguator so agents can't misread it: features cut via
     // this button are removals; everything else is a redesign instruction.
-    if (decision === "toss" && detail && !/^(remove|change|resolved|moot):/.test(detail)) {
+    if ((decision === "change" || decision === "toss") && detail && !/^(remove|change|resolved|moot):/.test(detail)) {
       detail = (it.kind === "feature" ? "remove: " : "change: ") + detail;
     }
     if (writing) return;

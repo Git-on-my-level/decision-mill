@@ -66,11 +66,11 @@ explanation: >              # optional for most kinds; REQUIRED for kind: featur
   Ticking a todo updates instantly on the web app but waits for the server on
   mobile, so on a slow connection the mobile checkbox looks broken. Picking one
   behavior means the checkbox feels the same everywhere.
-proposed: unify-on-optimistic  # keep | toss | unify-on-<x> | file | n/a — the extractor's proposal
+proposed: unify-on-optimistic  # keep | change | unify-on-<x> | file | n/a — the extractor's proposal
 confidence: high            # high | med | low
 status: open                # open | decided | needs-metrics | team (parked for a live walkthrough)
-decision: null              # null until adjudicated; then keep | toss | defer | unify-on-<x>
-decision_detail: null       # free text qualifying the decision (see toss prefixes below)
+decision: null              # null until adjudicated; then keep | change | defer | unify-on-<x>
+decision_detail: null       # free text qualifying the decision (see change prefixes below)
 decided_at: null            # ISO date when decided
 evidence:                   # locators; lines optional — "120", "120-180", "364,388-468"
   - locator: repo:web/src/TodoList.tsx
@@ -120,20 +120,22 @@ These are the load-bearing ones. Each exists because something went wrong withou
   must say what the user gets, which surfaces have it, and what cutting it would
   mean. It is not a summary of the prose below the fence, and it stays short.
 - **`FEAT` items sit above shape divergences.** They ask whether the user-visible
-  feature should be carried forward at all (`keep` / `toss` / `defer`). Prefer a
+  feature should be carried forward at all (`keep` / `change` / `defer`). Prefer a
   dedicated `## Feature inventory` section placed just before the GEN item.
-- **Decision vocabulary**: the review UI offers only `keep`, `toss` (labelled
-  "Change" — do not carry forward as-is), `defer`, and `unify-on-<x>` on divergences.
-  `accept`, `reject` and `file` are legal legacy/handoff values — parsers must still
-  accept and render them — but the UI no longer produces the first two. `file` means
+- **Decision vocabulary**: the review UI offers only `keep` (good as-is, with the
+  recommendation on record), `change` (needs adjustment per the recorded
+  recommendation), `defer`, and `unify-on-<x>` on divergences. The stored id matches
+  the button label. `toss` (old spelling of `change`), `accept` (old spelling of
+  `keep`), `reject` and `file` are legal legacy/handoff values — parsers must still
+  accept and render them — but the UI no longer produces the first three. `file` means
   "another team owns this; hand it over", and is the honest verdict for an item whose
   evidence all lives in code this review does not control.
-- **`toss` does NOT mean delete.** It means "do not carry forward as-is"; the
+- **`change` does NOT mean delete.** It means "do not carry forward as-is"; the
   `decision_detail` and notes carry the reviewer's redesign instructions and are the
   actionable part of the decision. Only a detail starting `remove:` authorizes
   removing a capability. The UI auto-prefixes one-click Change decisions (`remove:`
   on features, `change:` otherwise).
-- **Every `toss` needs a prefixed `decision_detail`.** `toss` means at least four
+- **Every `change` needs a prefixed `decision_detail`.** `change` means at least four
   different things, and once the spec is disposed of, only the decision and its detail
   survive. Required prefixes:
   - `remove:` — a user-visible capability is being removed (owes a removal record)
@@ -141,10 +143,11 @@ These are the load-bearing ones. Each exists because something went wrong withou
   - `resolved:` — the question is now answered; the answer follows
   - `moot:` — the parent feature was cut; name the parent
 
-  `validate.js` warns on a null-detail or unprefixed `toss`; warnings become errors
-  under `--strict`, which is the gate before any spec file is deleted.
-- **Burden of proof is on `toss`.** Items with `confidence: low` and `proposed: toss`
-  default to keep unless a human decides otherwise. An extractor's low-confidence
+  `validate.js` warns on a null-detail or unprefixed `change` (or legacy `toss`);
+  warnings become errors under `--strict`, which is the gate before any spec file is
+  deleted.
+- **Burden of proof is on `change`.** Items with `confidence: low` and a
+  `change`-class proposal default to keep unless a human decides otherwise. An extractor's low-confidence
   hunch is not a mandate to delete a feature.
 - **Scope of record: a `FEAT` item's decision is the scope of record.**
   `DIV`/`INV`/`FC`/`UNK` decisions may not widen or narrow it. Where a divergence note

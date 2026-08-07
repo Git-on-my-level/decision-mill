@@ -144,7 +144,7 @@ be rejected:
 
 Extracted from a real frontend-unification program where it was used to adjudicate a
 few thousand items across a handful of capability specs. The rules in `FORMAT.md` that
-look fussy — the `toss` prefixes, the scope-of-record rule, the four-point cap on
+look fussy — the `change` prefixes, the scope-of-record rule, the four-point cap on
 metrics — are all scar tissue from that run. They are the parts most worth keeping.
 
 MIT licensed.
