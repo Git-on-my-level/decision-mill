@@ -100,3 +100,53 @@ that drove it. Only UX feedback is quoted; no labeled content appears here.
     judge used a warm light palette with a dark-mode variant and one card at a time.
     → One centered card, large choice buttons with visible keys, light and dark
     themes on shared tokens, and a phone-width layout.
+
+## Waves: the original technique (2026-10-03) and what changed
+
+The mentor pilot (`~/.local/share/jev-pilots/mentor/`) is where "3 waves of 20, then
+infer the rest" was first run. What it did, from its files:
+
+- **Wave 1** (`wave1/selection.json`): a stratified enrichment sample, not a
+  prevalence sample — a fixed seed and a quota of 5 from each of 4 strata defined by
+  the systems under test, with an empty stratum backfilled.
+- **Inference** was done by the orchestrating agent itself, in context — no script,
+  no API key: it wrote a rubric citing wave-1 card ids (`inferred/RUBRIC-v1.md`) and
+  labels with a confidence and the rule used (`inferred/labels-v1.jsonl`).
+- **Wave 2** took the lowest-confidence stand-in items, and its predictions were saved
+  first with an explicit "committed before the human labels" flag
+  (`inferred/wave2-predictions.json`). The rubric was then refit (`labels-v2.jsonl`);
+  agreement on wave 2 after the refit was in-sample and not reportable.
+- **Wave 3** was a random hold-out (at most one item per topic), predictions saved
+  first (`inferred/wave3-predictions.json`), with an acceptance bar set in advance.
+- **The stand-in failed its bar** on the hold-out, and its confidences were not
+  calibrated (high-confidence cards were no more accurate). The inferred labels were
+  discarded and the human's 60 labels alone became the evaluation set; an early claim
+  made from inferred labels had to be retracted. Records:
+  `workspace/omi/data/run-2026-10-03-proactivity-v2/STATE.md`.
+
+→ Generalized as waves mode (`LABELS.md#waves`, `lib/waves.js`):
+
+1. Wave files freeze each wave and record the stand-in's predictions at freeze time,
+   so held-out agreement is computed from the file, never re-derived after a refit.
+2. The last wave is random by default and graded against a pre-registered `accept`
+   bar; Results says `rejected` plainly and tells the reader to use human-only numbers.
+3. Targeted waves add disagreement-with-a-model and stratum/score-bin coverage to the
+   original lowest-confidence rule, and are reported apart as a pessimistic estimate.
+4. Calibration buckets and a predicted-vs-human label mix (leniency check) are shown,
+   because the pilot's confidences and label mix were the visible failure.
+5. The brief shows the human's actual label usage (the pilot's reviewer was
+   effectively binary while the stand-in leaned on "neutral") and the stand-in's
+   overruled predictions; it never shows model answers.
+6. The tool needs no model key: the agent infers, the CLI moves files.
+
+## Long sittings (2026-10-04 feedback)
+
+"After every label, the instructions pop up again which means I have to scroll
+down." The card was re-rendered with the page scrolled to the top, where the
+expanded instructions sat, and the verdict buttons were below a long transcript.
+→ Instructions open on the first visit only and fold away once labeling starts (`i`
+toggles; remembered per task); the next card replaces the old one in place with the
+viewport at its top; one slim sticky bar holds round/wave, count, dots and pace; the
+verdict buttons live in a sticky bottom bar; the transcript no longer scrolls inside
+its own box; meta chips are formatted and de-duplicated against the title
+(`meta_display`); `s` skips for now and `u` undoes from anywhere.

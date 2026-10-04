@@ -34,7 +34,9 @@ Rules that matter (each came from a real labeling session):
    neighbors (before/after/overlapping, with their own summary or segments). If an
    item must be cut, set `truncated: true`. Add `media[]` audio when the question
    depends on what was actually said.
-3. **Rounds of 20–50, stratified across the model score range.** Set `round_size`
+3. **Fewer labels: waves.** When a model stand-in can plausibly infer the human's
+   labels, set `waves: {count: 3, size: 20}` (see "Waves" below) instead of rounds.
+   Otherwise use **rounds of 20–50, stratified across the model score range.** Set `round_size`
    and give each item a `stratum` (e.g. score bands `p_00_20`…`p_80_100`, or
    disagreement classes like `jev_keep_nano_discard`). `stratify: balanced` covers the
    range every round; add a `random` stratum (or `stratify: proportional`) when you
@@ -60,14 +62,39 @@ Bind stays on 127.0.0.1. For a human on another machine, proxy it on the tailnet
 the `Tailscale-User-Login` header, or set `REVIEWER=<name>` for a single person.
 Start on a non-default port, record the PID, and stop it by PID when done.
 
-Tell the human: the URL, the task name, round size and rough time ("40 cards, ~10
-min"), and that keys are on the buttons (`1/2/3`, `u` undo, `n` note, `?` help).
+Tell the human: the URL, the task name, round or wave size and rough time ("20
+cards, ~6 min"), and that keys are on the buttons (`1/2/3`, `s` skip, `u` undo,
+`n` note, `i` instructions, `?` help).
 
-## Model stand-in labels
+## Waves: the between-wave procedure (you are the stand-in)
 
-The "3 waves of 20, then infer the rest" pattern: after each human round, label the
-remaining items yourself and write them as stand-ins through the server (it
-serializes writes with the human's clicks):
+Wave 1 freezes itself when the human opens the task. When they finish a wave the UI
+says the agent is inferring; that is you. Each time:
+
+1. `node tools/spec-review/labels.js waves <task>` — state must be `inferring`.
+2. `node tools/spec-review/labels.js infer-prompt <task> --out <scratch>/brief.md` and
+   read all of it: the human's labels and notes, the label mix they actually use, your
+   earlier predictions they overruled, and every unlabeled item (no model answers).
+3. Write a short rubric citing example ids, then one JSON line per unlabeled item:
+   `{"item_id", "label", "confidence", "rationale"}`. `confidence` = probability the
+   human picks exactly that label; be calibrated (low-confidence items become the
+   next wave; the last wave is a random check of you). Do not predict a label the
+   human never uses.
+4. `node tools/spec-review/labels.js import-standin <task> <file> --model <your-model-id>`
+   (all-or-nothing; refuses the human's file).
+5. `node tools/spec-review/labels.js next-wave <task> --dry-run`, check reasons and
+   strata, then run it without `--dry-run`. The UI shows the new wave within 15 s.
+6. Tell the human the wave is ready. After the last wave, report the **hold-out**
+   agreement with n and interval against the `accept` bar; if it is `rejected`,
+   report human-only numbers only (optionally re-infer and `next-wave --extra`).
+
+Never re-score a targeted wave after refitting on it, never write human rows, and
+never edit or delete label or wave files.
+
+## Model stand-in labels without waves
+
+In rounds mode you can still label the remaining items yourself and write them as
+stand-ins through the server (it serializes writes with the human's clicks):
 
 ```sh
 curl -s -X POST localhost:4610/api/task/<id>/labels -H 'content-type: application/json' \

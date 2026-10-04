@@ -106,14 +106,25 @@ All of them are read and normalized in one place, [`lib/config.js`](lib/config.j
   speakers, your own lines styled as yours, timestamps), an audio player when the
   item has media (timestamps seek it), the model-written summary collapsed with a
   caveat, and the neighboring items, each expandable — so nobody judges a snippet.
-- Press a label's key (shown on the button) and the label saves and the next
-  unlabeled card appears. Checkbox fields toggle with their key; `n` focuses the note
-  (it rides along with the next label, or Enter saves it on a labeled card). `u` undoes
-  the last label and returns to that card. Unsure is always offered.
-- **Rounds**: a bar shows the round, one dot per card (colored by your label), cards
-  left and a pace estimate. Finishing a round shows a round-done screen with the
-  usefulness headline; Enter starts the next one. Rounds are deterministic, so
-  closing the browser or restarting the server resumes where you were.
+  Meta chips show only `meta_display` keys, formatted (never a raw timestamp), and
+  drop what the title already says.
+- Built for long sittings: one slim sticky bar (round or wave, `done/total`, one dot
+  per card, pace and session time, an Instructions button), and a sticky verdict bar
+  at the bottom of the viewport with the keys on every button. Press a label's key
+  and the next unlabeled card replaces the card in place, scrolled to its top.
+  Instructions open on the first visit to a task only, fold away once you start, and
+  `i` toggles them (remembered per task in this browser).
+- Keys: label keys save; checkbox fields toggle with their key; `s` skips for now (the
+  card comes back at the end); `j`/`k` move; `n` opens the note (it rides along with
+  the next label, or Enter saves it on a labeled card); `u` undoes your last label from
+  anywhere (any card, the done screen, Items, Results). Unsure is always offered.
+- **Rounds**: deterministic stratified sittings; finishing one shows a done screen
+  with the usefulness headline; Enter starts the next. Closing the browser or
+  restarting the server resumes where you were.
+- **Waves** (task.yaml `waves:`): a few small frozen waves instead of rounds over
+  everything. Between waves the done screen explains that an agent is inferring the
+  rest and picking the next wave, and checks every 15 s until it appears. See
+  [`LABELS.md#waves`](../../LABELS.md#waves).
 - **Blind**: while a task is blind the server withholds each item's model answers and
   stratum until you have labeled it; afterwards they appear collapsed under the card.
 - **Items** tab: every item by round, filterable (unlabeled, labeled, unsure, with a
@@ -124,14 +135,23 @@ All of them are read and normalized in one place, [`lib/config.js`](lib/config.j
   for scored models (your positive rate per score bin, agreement at each threshold,
   the lowest threshold that flags nothing you labeled otherwise), per-stratum
   agreement, and the disagreeing items. A toggle fills unlabeled items with stand-in
-  labels. `Shift+L`/`Shift+I`/`Shift+R` switch tabs.
+  labels. In waves mode Results opens with **Final labels**: the stand-in's held-out
+  accuracy against the pre-set bar, your labels plus the stand-in's, each model's
+  agreement on your labels only and on the combined set side by side, per-wave
+  predicted-before-labeling agreement, calibration and the stand-in's misses.
+  `Shift+L`/`Shift+I`/`Shift+R` switch tabs.
 
 ### Labels CLI
 
 ```sh
 node labels.js tasks                          # tasks under LABELS_ROOT
 node labels.js stats <task-dir|id> [--reviewer R] [--fill] [--json]
-node labels.js export <task-dir|id> [--reviewer R] [--source human|model-standin] [--format jsonl|csv]
+node labels.js export <task-dir|id> [--reviewer R] [--source human|model-standin] [--final] [--format jsonl|csv]
+# waves mode — the between-wave agent loop (LABELS.md#waves)
+node labels.js waves <task>                   # state, per-wave progress, stand-in coverage, next action
+node labels.js infer-prompt <task> --out brief.md
+node labels.js import-standin <task> standin.jsonl [--model ID] [--dry-run]
+node labels.js next-wave <task> [--dry-run]   # select + freeze waves/wave-N.json
 ```
 
 Reads the files directly; prints the same numbers as Results (`lib/results.js`).
@@ -153,7 +173,7 @@ do not, unless `--strict`. The UI shows the same warnings in the spec header.
 ## Tests
 
 ```sh
-npm test          # node --test: label store, rounds, results math, task format,
+npm test          # node --test: label store, rounds, waves, results math, task format,
                   # and an HTTP suite against a real server on temp copies
                   # (spec writes stay surgical, blind enforcement, concurrency)
 ```

@@ -66,9 +66,11 @@ The lifecycle above is **spec mode**. Use **label mode** instead when the questi
 the same for every item and the answer is a judgment, not a design decision: "would
 you keep this conversation?", "is this notification useful?", "is this model output
 right?". Typical shape: an agent exports a few hundred items with model scores, the
-human labels rounds of 20–50 spread across the score range, a strong model infers
-the rest as stand-in labels, and Results says whether the stand-in and each model can
-be trusted. Under ~50 decisions of either kind, a document is fine.
+human labels rounds of 20–50 spread across the score range — or, in **waves** mode,
+just three waves of ~20 (a stratified seed, the items the stand-in is least sure of,
+then a random hold-out) while an agent infers the rest between waves — and Results
+says whether the stand-in and each model can be trusted. Under ~50 decisions of
+either kind, a document is fine.
 
 Spec mode — good fit:
 
@@ -115,6 +117,10 @@ git).
 # a task is a directory: task.yaml + items.jsonl (+ media/); see LABELS.md
 node server.js --labels ~/.local/share/labels --port 4610
 ```
+
+To label fewer items, add `waves: {count: 3, size: 20}` to the task; between waves
+an agent runs `labels.js infer-prompt`, `import-standin` and `next-wave` (the
+procedure is in [LABELS.md](LABELS.md#waves) and the skill).
 
 Label data never goes in git. To label from another machine, keep the loopback bind
 and put a proxy in front, e.g. `tailscale serve --bg --https=4610

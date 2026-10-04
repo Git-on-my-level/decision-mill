@@ -1,6 +1,10 @@
-/* Label mode — one card at a time, blind, in stratified rounds; plus an item list
-   and a Results view that answers "is my labeling useful?".
-   Mounted by shell.js at #/task/<id>[/item/<item>|/items|/results]. */
+/* Label mode — one card at a time, blind, in stratified rounds or frozen waves;
+   plus an item list and a Results view that answers "is my labeling useful?".
+   Mounted by shell.js at #/task/<id>[/item/<item>|/items|/results].
+
+   Built for long sittings: a slim sticky progress bar, the instructions out of the
+   way after the first visit, the verdict buttons in a sticky bar at the bottom,
+   and each next card swapped in place with the viewport at its top. */
 // Scoped: each mode file runs in its own function so top-level names (both
 // modes have a renderItems) can never collide; only the mode object is global.
 (() => {
@@ -14,12 +18,16 @@ const L = {
   tab: "label",
   cache: new Map(),          // item id -> {item, state}
   undo: [],                  // item ids labeled this session, most recent last
-  noteDraft: {}, fieldDraft: {},
+  noteDraft: {}, fieldDraft: {}, noteOpen: false,
   fill: store.get("fill", false),
   itemsFilter: "all", itemsRound: "all", itemsSel: 0,
-  saving: false, cardTok: 0, pickTimes: [],
+  saving: false, cardTok: 0, pickTimes: [], sessionStart: null,
+  instrOpen: false, instrAuto: false,
+  pollTimer: null, flashTimer: null,
 };
 
+const waves = () => L.data?.waves || null;
+const unitName = () => (waves() ? "Wave" : "Round");
 const roundIds = () => L.rounds[L.roundIdx]?.ids || [];
 const currentId = () => roundIds()[L.pos] || null;
 const labelOf = (id) => L.index.get(id)?.label ?? null;
@@ -27,6 +35,7 @@ const labelDef = (id) => L.task?.labels.find((l) => l.id === id) || null;
 const labeledCount = () => [...L.index.values()].filter((r) => r.label != null).length;
 const toneOf = (l) => (!l ? "none" : l.tone || (l.abstain ? "abstain" : "neutral"));
 const enter = (k) => el("kbd", {}, k);
+const taskKeys = () => new Set([...(L.task?.labels || []).map((l) => l.key), ...(L.task?.fields || []).map((f) => f.key)].filter(Boolean));
 
 function firstUnlabeled(r, from = 0) {
   const ids = L.rounds[r]?.ids || [];
@@ -48,17 +57,38 @@ function settleHash() {
   if (location.hash !== want) history.replaceState(null, "", want);
 }
 
+function applyTaskData(data) {
+  L.data = data; L.task = data.task;
+  L.index = new Map(data.index.map((r) => [r.id, r]));
+  L.rounds = data.rounds;
+}
+
 async function loadTask(taskId) {
   const data = await api(`api/task/${enc(taskId)}`);
   const changed = L.taskId !== taskId;
-  L.taskId = taskId; L.data = data; L.task = data.task;
-  L.index = new Map(data.index.map((r) => [r.id, r]));
-  L.rounds = data.rounds;
+  L.taskId = taskId;
+  applyTaskData(data);
   if (changed) {
-    L.cache.clear(); L.undo = []; L.noteDraft = {}; L.fieldDraft = {}; L.pickTimes = [];
+    L.cache.clear(); L.undo = []; L.noteDraft = {}; L.fieldDraft = {}; L.pickTimes = []; L.sessionStart = null; L.noteOpen = false;
     if (data.current >= L.rounds.length) { L.roundIdx = Math.max(0, L.rounds.length - 1); L.pos = roundIds().length; }
     else { L.roundIdx = data.current; L.pos = firstUnlabeled(L.roundIdx) ?? 0; }
+    // Instructions: open on the first visit to a task only. After that they stay
+    // as the reviewer left them (i toggles), and labeling never re-opens them.
+    const seen = store.get(`instr:${taskId}`, null);
+    L.instrAuto = seen === null && Boolean(L.task.instructions);
+    L.instrOpen = seen === null ? L.instrAuto : Boolean(seen);
+    if (seen === null) store.set(`instr:${taskId}`, false);
   }
+}
+
+// Re-read rounds/waves without disturbing the current card (waves change when an
+// agent freezes the next one).
+async function refreshTask() {
+  const data = await api(`api/task/${enc(L.taskId)}`);
+  const curId = currentId();
+  applyTaskData(data);
+  if (curId) gotoItem(curId);
+  return data;
 }
 
 const Label = {
@@ -74,20 +104,22 @@ const Label = {
 function render() {
   const v = $("#label-view");
   const t = L.task;
+  stopPolling();
   const n = labeledCount();
   const tabs = [["label", "Label", null], ["items", "Items", `${n}/${L.index.size}`], ["results", "Results", null]];
   const head = el("header", { class: "lv-head" },
     el("div", { class: "lv-title" },
-      el("div", { class: "eyebrow" }, "Label task", t.blind ? el("span", { class: "hc-tag" }, "blind") : null),
-      el("h2", {}, t.title)),
+      el("h2", { title: t.title }, t.title, t.blind ? el("span", { class: "hc-tag" }, "blind") : null)),
     el("nav", { class: "tabs", role: "tablist" }, tabs.map(([id, name, extra]) =>
       el("a", { class: `tab${L.tab === id ? " on" : ""}`, role: "tab", "aria-selected": String(L.tab === id),
         href: `#/task/${enc(L.taskId)}${id === "label" ? "" : `/${id}`}` }, name, extra ? el("small", {}, extra) : null))));
+  const sticky = el("div", { class: "lv-sticky" }, head);
+  if (L.tab === "label") sticky.append(el("div", { id: "round-bar", class: "round-bar" }));
   const problems = [];
   if (L.data.errors.length) problems.push(el("div", { class: "lv-errors" }, el("b", {}, "Task errors: "), L.data.errors.map((e) => el("div", {}, `· ${e}`))));
   if (L.data.warnings.length) problems.push(el("details", { class: "lv-warnings" }, el("summary", {}, `${L.data.warnings.length} format warning(s)`), L.data.warnings.map((e) => el("div", {}, `· ${e}`))));
   const body = el("div", { class: "lv-body" });
-  v.replaceChildren(el("div", { class: "lv" }, head, ...problems, body));
+  v.replaceChildren(el("div", { class: `lv tab-${L.tab}` }, sticky, ...problems, body));
   if (L.tab === "items") renderItems(body);
   else if (L.tab === "results") renderResults(body);
   else renderLabel(body);
@@ -95,72 +127,134 @@ function render() {
 
 function refreshTaskRow() {
   const row = document.querySelector(`.task-row[data-task="${CSS.escape(L.taskId)}"]`);
-  if (!row) return;
-  const n = labeledCount(), total = L.index.size || 1;
-  row.querySelector(".meter i").style.width = `${(100 * n / total).toFixed(1)}%`;
-  const cur = L.rounds.findIndex((r) => r.ids.some((id) => labelOf(id) == null));
-  row.querySelector(".stats").textContent = `${n}/${L.index.size} labeled${cur === -1 ? " · done" : ` · round ${cur + 1}/${L.rounds.length}`}`;
+  const n = labeledCount();
   const tabCount = document.querySelector(".lv-head .tab:nth-child(2) small");
   if (tabCount) tabCount.textContent = `${n}/${L.index.size}`;
+  if (!row) return;
+  const total = L.index.size || 1;
+  row.querySelector(".meter i").style.width = `${(100 * n / total).toFixed(1)}%`;
+  const cur = L.rounds.findIndex((r) => r.ids.some((id) => labelOf(id) == null));
+  const w = waves();
+  const of = w ? w.count : L.rounds.length;
+  row.querySelector(".stats").textContent = `${n}/${L.index.size} labeled${cur === -1 ? (w && L.rounds.length < w.count ? ` · waiting for wave ${L.rounds.length + 1}` : " · done") : ` · ${unitName().toLowerCase()} ${cur + 1}/${of}`}`;
 }
 
 /* ---------- label tab ---------- */
 function renderLabel(body) {
   const t = L.task;
   if (t.instructions) {
-    const key = `instr:${L.taskId}`;
-    const d = el("details", { class: "instructions", open: store.get(key, labeledCount() === 0) }, el("summary", {}, "Instructions"), el("div", { class: "prose", html: md(t.instructions) }));
-    d.addEventListener("toggle", () => store.set(key, d.open));
+    const d = el("details", { class: "instructions", id: "instr", open: L.instrOpen },
+      el("summary", {}, "Instructions", el("span", { class: "hint" }, " — i to show or hide")), el("div", { class: "prose", html: md(t.instructions) }));
+    d.addEventListener("toggle", () => {
+      if (d.open === L.instrOpen) return;
+      L.instrOpen = d.open; L.instrAuto = false;
+      store.set(`instr:${L.taskId}`, d.open);
+      syncInstrButton();
+    });
     body.append(d);
   }
-  body.append(el("div", { id: "round-bar" }), el("div", { id: "card-slot" }));
+  body.append(el("div", { id: "card-slot" }));
   renderRoundBar();
-  renderCardArea();
+  renderCardArea({ scroll: !L.instrOpen });
+}
+
+function setInstructions(open, { user = true } = {}) {
+  const d = $("#instr");
+  if (!d) return;
+  L.instrOpen = open;
+  if (user) { L.instrAuto = false; store.set(`instr:${L.taskId}`, open); }
+  d.open = open;
+  syncInstrButton();
+  if (open) $("#main").scrollTo({ top: 0 });
+  else scrollToCard();
+}
+function syncInstrButton() {
+  const b = $("#instr-btn");
+  if (b) b.classList.toggle("on", L.instrOpen);
+}
+
+function paceText(left) {
+  const parts = [];
+  const n = L.pickTimes.length;
+  if (n && L.sessionStart) {
+    const mins = Math.max(1, Math.round((Date.now() - L.sessionStart) / 60000));
+    parts.push(`${n} this session · ${mins} min`);
+  }
+  if (n >= 3 && left) {
+    const gaps = L.pickTimes.slice(1).map((x, i) => x - L.pickTimes[i]).filter((g) => g < 300000);
+    if (gaps.length) parts.push(`~${Math.max(1, Math.round((gaps.reduce((a, b) => a + b, 0) / gaps.length) * left / 60000))} min left`);
+  }
+  return parts.join(" · ");
 }
 
 function renderRoundBar() {
   const bar = $("#round-bar");
   if (!bar) return;
   const ids = roundIds();
-  const left = ids.filter((id) => labelOf(id) == null).length;
-  const sel = el("select", { class: "round-select", "aria-label": "Round" }, L.rounds.map((r, i) => {
-    const done = r.ids.filter((id) => labelOf(id) != null).length;
-    return el("option", { value: String(i), selected: i === L.roundIdx }, `Round ${r.n} of ${L.rounds.length} · ${done}/${r.ids.length}${done === r.ids.length ? " ✓" : ""}`);
+  const w = waves();
+  const of = w ? w.count : L.rounds.length;
+  const done = ids.filter((id) => labelOf(id) != null).length;
+  const left = ids.length - done;
+  const sel = el("select", { class: "round-select", "aria-label": unitName() }, L.rounds.map((r, i) => {
+    const d = r.ids.filter((id) => labelOf(id) != null).length;
+    return el("option", { value: String(i), selected: i === L.roundIdx }, `${unitName()} ${r.n} of ${of}${d === r.ids.length ? " ✓" : ""}`);
   }));
   sel.addEventListener("change", () => {
     L.roundIdx = Number(sel.value);
     L.pos = firstUnlabeled(L.roundIdx) ?? roundIds().length;
-    renderRoundBar(); renderCardArea();
+    renderRoundBar(); renderCardArea({ scroll: true });
+    sel.blur();
   });
-  // Pace estimate from this session's own picks, once there are a few.
-  let eta = "";
-  if (L.pickTimes.length >= 3 && left) {
-    const gaps = L.pickTimes.slice(1).map((x, i) => x - L.pickTimes[i]).filter((g) => g < 300000);
-    if (gaps.length) eta = ` · about ${Math.max(1, Math.round((gaps.reduce((a, b) => a + b, 0) / gaps.length) * left / 60000))} min left`;
-  }
+  if (!L.rounds.length) sel.append(el("option", {}, `${unitName()} 1 of ${of}`));
   const dots = el("div", { class: "dots", role: "list" }, ids.map((id, i) => {
     const l = labelDef(labelOf(id));
-    return el("button", { class: `dot tone-${toneOf(l)}${i === L.pos ? " cur" : ""}`, type: "button", role: "listitem",
+    return el("button", { class: `dot tone-${toneOf(l)}${i === L.pos ? " cur" : ""}`, type: "button", role: "listitem", tabindex: "-1",
       title: `${i + 1}. ${L.index.get(id)?.title || id}${l ? ` — ${l.label}` : ""}`,
-      onclick: () => { L.pos = i; renderRoundBar(); renderCardArea(); } });
+      onclick: () => { L.pos = i; renderRoundBar(); renderCardArea({ scroll: true }); } });
   }));
-  bar.className = "round-bar";
-  bar.replaceChildren(
-    el("div", { class: "rb-top" }, sel, el("span", { class: "rb-left" }, left ? `${left} of ${ids.length} left${eta}` : "round complete"),
-      el("span", { class: "rb-total" }, `${labeledCount()} of ${L.index.size} labeled overall`)),
-    dots);
+  const pace = paceText(left);
+  bar.replaceChildren(...[
+    sel,
+    el("span", { class: "rb-count", title: `${labeledCount()} of ${L.index.size} labeled overall` }, ids.length ? `${done}/${ids.length}` : "—"),
+    dots,
+    el("span", { class: "rb-flash", id: "rb-flash", "aria-live": "polite" }),
+    pace ? el("span", { class: "rb-pace" }, pace) : null,
+    L.task.instructions ? el("button", { class: `rb-btn${L.instrOpen ? " on" : ""}`, id: "instr-btn", type: "button", title: "Instructions (i)", onclick: () => setInstructions(!L.instrOpen) }, "Instructions ", enter("i")) : null].filter(Boolean));
 }
 
-async function renderCardArea() {
+function flash(msg) {
+  const f = $("#rb-flash");
+  if (!f) return;
+  f.replaceChildren(msg);
+  f.classList.add("on");
+  clearTimeout(L.flashTimer);
+  L.flashTimer = setTimeout(() => f.classList.remove("on"), 2400);
+}
+
+// Put the card's top just under the sticky bar — instant, so a sitting of a
+// hundred cards never fights a scroll animation.
+function scrollToCard() {
+  const main = $("#main"), slot = $("#card-slot"), sticky = $(".lv-sticky");
+  if (!main || !slot) return;
+  const top = main.scrollTop + slot.getBoundingClientRect().top - main.getBoundingClientRect().top - (sticky ? sticky.offsetHeight : 0) - 10;
+  main.scrollTo({ top: Math.max(0, top) });
+}
+
+async function renderCardArea({ scroll = false } = {}) {
   const slot = $("#card-slot");
   if (!slot) return;
+  stopPolling();
   const ids = roundIds();
-  if (!ids.length) { slot.replaceChildren(el("div", { class: "empty" }, "This task has no items.")); return; }
-  if (L.pos >= ids.length) { slot.replaceChildren(roundDone()); return; }
+  if (!ids.length) {
+    slot.replaceChildren(waves() ? waveDone() : el("div", { class: "empty" }, "This task has no items."));
+    return;
+  }
+  if (L.pos >= ids.length) { slot.replaceChildren(waves() ? waveDone() : roundDone()); if (scroll) scrollToCard(); return; }
   const id = currentId();
   const tok = ++L.cardTok;
   let entry = L.cache.get(id);
   if (!entry) {
+    // Keep the old card on screen (dimmed) until the new one arrives: no blank flash.
     slot.classList.add("loading");
     try { entry = await api(`api/task/${enc(L.taskId)}/item/${enc(id)}`); }
     catch (e) { slot.replaceChildren(el("div", { class: "lv-errors" }, `Could not load ${id}: ${e.message}`)); return; }
@@ -168,14 +262,16 @@ async function renderCardArea() {
     L.cache.set(id, entry);
   }
   if (tok !== L.cardTok) return;
-  slot.replaceChildren(cardEl(entry));
-  $("#main").scrollTop = 0;
+  slot.replaceChildren(cardEl(entry), actionBar(entry));
+  if (scroll) scrollToCard();
   prefetch();
 }
 
 function prefetch() {
   const ids = roundIds();
-  for (const id of ids.slice(L.pos + 1, L.pos + 3)) {
+  const next = [];
+  for (let i = L.pos + 1; i < ids.length && next.length < 3; i++) if (labelOf(ids[i]) == null) next.push(ids[i]);
+  for (const id of next) {
     if (L.cache.has(id)) continue;
     api(`api/task/${enc(L.taskId)}/item/${enc(id)}`).then((e) => { if (!L.cache.has(id)) L.cache.set(id, e); }).catch(() => {});
   }
@@ -197,7 +293,7 @@ function transcriptEl(segments, audioRef) {
     const who = speakerName(s);
     const same = prev && prev === who;
     const time = s.start != null ? el(audioRef ? "button" : "span", {
-      class: "seg-time", type: audioRef ? "button" : null, title: audioRef ? "play from here" : null,
+      class: "seg-time", type: audioRef ? "button" : null, title: audioRef ? "play from here" : null, tabindex: audioRef ? "-1" : null,
       onclick: audioRef ? () => { const a = audioRef(); if (a) { a.currentTime = Number(s.start); a.play().catch(() => {}); } } : null,
     }, fmtClock(s.start)) : null;
     box.append(el("div", { class: `seg${s.is_user ? " me" : ""}${same ? " cont" : ""}` },
@@ -253,40 +349,93 @@ function mediaEl(item) {
   return { node, audio: () => firstAudio };
 }
 
+// Card meta chips. Only keys in task.meta_display (default below) are shown,
+// formatted — never a raw ISO timestamp — and a chip that only repeats the
+// item's title (a builder often titles items "Sun Sep 20, 12:30 PM · 76 words")
+// is dropped.
+const META_DEFAULT = ["started_at", "duration_s", "word_count", "source"];
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+function metaValue(k, v) {
+  if (v == null || v === "" || typeof v === "object") return null;
+  if (k === "word_count") return `${v} words`;
+  if (/(_s|_sec|_secs|_seconds)$/.test(k) || k === "duration") {
+    const d = fmtDur(v);
+    return d ? (k === "duration_s" || k === "duration" ? `${d} long` : `${k.replace(/_(s|sec|secs|seconds)$/, "").replace(/_/g, " ")} ${d}`) : null;
+  }
+  if (typeof v === "string" && ISO_RE.test(v)) return k === "started_at" ? fmtDate(v) : `${k.replace(/_at$/, "").replace(/_/g, " ")} ${fmtDate(v)}`;
+  if (k === "source" || k === "language") return String(v);
+  return `${k.replace(/_/g, " ")}: ${v}`;
+}
+function inTitle(k, v, title) {
+  if (!title) return false;
+  const t = title.toLowerCase();
+  if (k === "word_count") return new RegExp(`\\b${Number(v)}\\s*words?\\b`).test(t);
+  if (typeof v === "string" && ISO_RE.test(v)) {
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return false;
+    const md = d.toLocaleString("en-US", { month: "short", day: "numeric" }).toLowerCase();
+    const hm = d.toLocaleString("en-US", { hour: "numeric", minute: "2-digit" }).toLowerCase().replace(/\s?[ap]m$/, "");
+    return t.includes(md) && t.includes(hm);
+  }
+  return false;
+}
 function metaChips(item) {
   const m = item.meta || {};
+  const keys = Array.isArray(L.task.meta_display) ? L.task.meta_display : META_DEFAULT;
   const chips = [];
-  if (m.started_at) chips.push(fmtDate(m.started_at));
-  if (m.duration_s != null) chips.push(fmtDur(m.duration_s));
-  if (m.word_count != null) chips.push(`${m.word_count} words`);
-  if (m.source) chips.push(String(m.source));
-  for (const [k, v] of Object.entries(m)) if (!["started_at", "duration_s", "word_count", "source"].includes(k) && v != null && typeof v !== "object") chips.push(`${k.replace(/_/g, " ")}: ${v}`);
+  for (const k of keys) {
+    if (!(k in m) || inTitle(k, m[k], item.title)) continue;
+    const s = metaValue(k, m[k]);
+    if (s) chips.push(s);
+  }
   if (item.stratum != null && !item.blinded) chips.push(`stratum: ${item.stratum}`);
   return chips;
 }
 
 function cardEl(entry) {
+  const { item } = entry;
+  const t = L.task;
+  const { node: media, audio } = mediaEl(item);
+  const summary = item.summary ? el("details", { class: "summary", open: t.summary === "open" },
+    el("summary", {}, "Summary", el("span", { class: "hint" }, " — written by a model from this transcript; it can make a fragment look meaningful")),
+    el("p", {}, item.summary)) : null;
+  const segs = item.content?.type === "transcript" ? (item.content.segments || []).length : 0;
+  const chips = metaChips(item);
+  return el("article", { class: "lcard", "data-id": item.id },
+    item.title ? el("h3", { class: "lc-title" }, item.title) : null,
+    chips.length || item.truncated ? el("div", { class: "lc-meta" },
+      chips.map((c) => el("span", { class: "chip" }, c)),
+      item.truncated ? el("span", { class: "chip warn" }, "excerpt — the full item was cut") : null) : null,
+    media,
+    el("div", { class: "lc-content" }, contentEl(item.content, audio)),
+    segs ? el("p", { class: "whole" }, item.truncated ? `Showing ${segs} segments of a longer item.` : `The whole item — all ${segs} segment${segs === 1 ? "" : "s"}, not an excerpt.`) : null,
+    summary,
+    contextEl(item.context),
+    revealEl(item, entry.state?.label ?? null));
+}
+
+// The verdict bar: sticky at the bottom of the viewport while the card is on
+// screen, so a verdict never needs a scroll. Keys are on every button.
+function actionBar(entry) {
   const { item, state } = entry;
   const t = L.task;
   const id = item.id;
   const ids = roundIds();
   const cur = state?.label ?? null;
   const fields = { ...(state?.fields || {}), ...(L.fieldDraft[id] || {}) };
-  const { node: media, audio } = mediaEl(item);
-
   const choices = el("div", { class: "choices", style: `--n:${t.labels.length}` }, t.labels.map((l) =>
-    el("button", { class: `choice tone-${toneOf(l)}${cur === l.id ? " sel" : ""}`, type: "button", "data-label": l.id,
+    el("button", { class: `choice tone-${toneOf(l)}${cur === l.id ? " sel" : ""}`, type: "button", "data-label": l.id, tabindex: "-1",
       onclick: () => pick(l.id) }, el("span", {}, l.label), l.key ? enter(l.key) : null)));
 
   const fieldEls = t.fields.map((f) => {
     if (f.type === "checkbox") {
       const on = Boolean(fields[f.id]);
-      return el("button", { class: `field-toggle${on ? " on" : ""}`, type: "button", "aria-pressed": String(on), onclick: () => toggleField(f.id) },
+      return el("button", { class: `field-toggle${on ? " on" : ""}`, type: "button", tabindex: "-1", "aria-pressed": String(on), onclick: () => toggleField(f.id) },
         el("span", { class: "box" }, on ? "✓" : ""), el("span", {}, f.label), f.key ? enter(f.key) : null);
     }
     if (f.type === "choice") {
       return el("div", { class: "field-choice" }, el("span", { class: "fc-label" }, f.label),
-        f.options.map((o) => el("button", { class: `seg-btn${fields[f.id] === o.id ? " on" : ""}`, type: "button",
+        f.options.map((o) => el("button", { class: `seg-btn${fields[f.id] === o.id ? " on" : ""}`, type: "button", tabindex: "-1",
           onclick: () => setField(f.id, fields[f.id] === o.id ? null : o.id) }, o.label)));
     }
     const inp = el("input", { class: "field-text", placeholder: f.label, value: fields[f.id] || "" });
@@ -294,42 +443,33 @@ function cardEl(entry) {
     return el("label", { class: "field-text-wrap" }, el("span", { class: "fc-label" }, f.label), inp);
   });
 
-  const note = el("input", { class: "note", id: "note", placeholder: "Note — rides along with your label (n to type, Enter to save)", value: L.noteDraft[id] ?? state?.note ?? "", spellcheck: "false" });
+  const noteVal = L.noteDraft[id] ?? state?.note ?? "";
+  const showNote = L.noteOpen || Boolean(noteVal);
+  const note = el("input", { class: "note", id: "note", placeholder: "Note — rides along with your label (Enter saves, Esc leaves)", value: noteVal, spellcheck: "false", hidden: !showNote });
   note.addEventListener("input", () => { L.noteDraft[id] = note.value; });
-  note.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); saveNote(); note.blur(); }
-  });
+  note.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveNote(); note.blur(); } });
 
-  const status = cur ? el("span", { class: "saved" }, `Saved · ${labelDef(cur)?.label || cur}${state?.at ? ` · ${new Date(state.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}`)
-    : el("span", { class: "unsaved" }, "Not labeled yet");
-
-  const summary = item.summary ? el("details", { class: "summary", open: t.summary === "open" },
-    el("summary", {}, "Summary", el("span", { class: "hint" }, " — written by a model from this transcript; it can make a fragment look meaningful")),
-    el("p", {}, item.summary)) : null;
-
-  const segs = item.content?.type === "transcript" ? (item.content.segments || []).length : 0;
-  return el("article", { class: "lcard", "data-id": id },
-    el("div", { class: "lc-meta" },
-      el("span", { class: "chip round" }, `${L.pos + 1} of ${ids.length}`),
-      metaChips(item).map((c) => el("span", { class: "chip" }, c)),
-      item.truncated ? el("span", { class: "chip warn" }, "excerpt — the full item was cut") : null),
-    item.title ? el("h3", { class: "lc-title" }, item.title) : null,
-    media,
-    el("div", { class: "lc-content" }, contentEl(item.content, audio)),
-    segs ? el("p", { class: "whole" }, item.truncated ? `Showing ${segs} segments of a longer item.` : `The whole item — all ${segs} segment${segs === 1 ? "" : "s"}, not an excerpt.`) : null,
-    summary,
-    contextEl(item.context),
-    el("section", { class: "ask" },
-      t.question ? el("h4", {}, t.question) : null,
-      choices,
-      fieldEls.length ? el("div", { class: "fields" }, fieldEls) : null,
-      note),
-    el("footer", { class: "lc-foot" },
-      el("button", { class: "btn", type: "button", onclick: () => step(-1), disabled: L.pos === 0 && L.roundIdx === 0 }, "← Back ", enter("k")),
-      el("button", { class: "btn", type: "button", onclick: () => step(1) }, "Skip → ", enter("j")),
+  const status = cur ? el("span", { class: "saved" }, `✓ ${labelDef(cur)?.label || cur}${state?.at ? ` · ${new Date(state.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}`)
+    : el("span", { class: "unsaved" }, `${L.pos + 1} of ${ids.length}`);
+  const skipKey = taskKeys().has("s") ? "j" : "s";
+  return el("section", { class: "actionbar", "aria-label": "Your verdict" },
+    t.question ? el("div", { class: "ab-q" }, t.question) : null,
+    choices,
+    el("div", { class: "ab-row" },
+      fieldEls,
+      showNote ? null : el("button", { class: "btn ghost note-btn", type: "button", tabindex: "-1", onclick: () => openNote() }, "✎ Note ", enter("n")),
+      el("span", { class: "ab-spacer" }),
       status,
-      cur || L.undo.length ? el("button", { class: "btn undo", type: "button", onclick: undo }, "↩ Undo ", enter("u")) : null),
-    revealEl(item, cur));
+      el("button", { class: "btn", type: "button", tabindex: "-1", title: "Previous card (k)", onclick: () => step(-1), disabled: L.pos === 0 && L.roundIdx === 0 }, "←", enter("k")),
+      el("button", { class: "btn", type: "button", tabindex: "-1", title: "Skip for now: it comes back at the end of the wave", onclick: skipForNow }, "Skip ", enter(skipKey)),
+      cur || L.undo.length ? el("button", { class: "btn undo", type: "button", tabindex: "-1", title: "Undo your last label (u)", onclick: undo }, "↩", enter("u")) : null),
+    note);
+}
+
+function openNote() {
+  L.noteOpen = true;
+  const n = $("#note");
+  if (n) { n.hidden = false; $(".note-btn")?.remove(); n.focus(); n.select(); }
 }
 
 // After a blind item is labeled, the model answers are available — collapsed, so
@@ -351,6 +491,10 @@ function flashChoice(labelId) {
   const b = document.querySelector(`.choice[data-label="${CSS.escape(labelId)}"]`);
   if (b) { b.classList.add("sel", "pressed"); }
 }
+function releaseFocus() {
+  const a = document.activeElement;
+  if (a && a !== document.body && $("#label-view")?.contains(a) && !isTyping()) a.blur();
+}
 
 async function pick(labelId) {
   const id = currentId();
@@ -368,11 +512,18 @@ async function pick(labelId) {
     const row = L.index.get(id);
     if (row) { row.label = res.state.label; row.note = res.state.note; if (res.item.stratum != null) row.stratum = res.item.stratum; }
     delete L.noteDraft[id]; delete L.fieldDraft[id];
+    L.noteOpen = false;
     L.undo.push(id);
+    if (!L.sessionStart) L.sessionStart = Date.now();
     L.pickTimes.push(Date.now());
+    // Instructions opened automatically on the first visit fold away once the
+    // reviewer starts labeling; ones they opened themselves stay open.
+    if (L.instrAuto && L.instrOpen) { L.instrOpen = false; L.instrAuto = false; const d = $("#instr"); if (d) d.open = false; }
     const roundWasOpen = roundIds().some((x) => x !== id && labelOf(x) == null);
     advance();
+    flash(`✓ ${labelDef(labelId)?.label || labelId} · u undo`);
     refreshTaskRow();
+    releaseFocus();
     if (!roundWasOpen) Shell.refreshNav();
   } catch (e) {
     toast(`Not saved: ${e.message}`, "err");
@@ -387,7 +538,20 @@ function advance() {
   L.pos = next == null ? roundIds().length : next;
   settleHash();
   renderRoundBar();
-  renderCardArea();
+  renderCardArea({ scroll: true });
+}
+
+// Skip for now: on to the next unlabeled card; this one comes back when the
+// reviewer reaches the end of the wave.
+function skipForNow() {
+  const ids = roundIds();
+  if (L.pos >= ids.length) return;
+  const next = firstUnlabeled(L.roundIdx, L.pos + 1) ?? firstUnlabeled(L.roundIdx, 0);
+  if (next == null || next === L.pos) { flash(labelOf(currentId()) == null ? "Last unlabeled card in this wave" : "Nothing left to skip to"); return; }
+  L.pos = next;
+  settleHash();
+  renderRoundBar();
+  renderCardArea({ scroll: true });
 }
 
 function step(d) {
@@ -408,7 +572,7 @@ function step(d) {
   L.pos = p;
   settleHash();
   renderRoundBar();
-  renderCardArea();
+  renderCardArea({ scroll: true });
 }
 
 async function undo() {
@@ -420,11 +584,10 @@ async function undo() {
     L.cache.set(id, { item: res.item, state: res.state && res.state.label != null ? res.state : { ...res.state, label: null } });
     const row = L.index.get(id);
     if (row) row.label = null;
-    gotoItem(id);
-    renderRoundBar();
-    renderCardArea();
+    if (L.tab !== "label") { L.tab = "label"; gotoItem(id); location.hash = `#/task/${enc(L.taskId)}`; render(); }
+    else { gotoItem(id); renderRoundBar(); renderCardArea({ scroll: true }); }
     refreshTaskRow();
-    toast(`Undone: ${L.index.get(id)?.title || id}`);
+    flash(`↩ Undone: ${L.index.get(id)?.title || id}`);
   } catch (e) {
     L.undo.push(id);
     toast(`Undo failed: ${e.message}`, "err");
@@ -439,6 +602,15 @@ async function writePartial(id, patch) {
   if (row) row.note = res.state.note;
 }
 
+// Field and note edits re-render only the action bar, never the card: the
+// transcript and the scroll position stay exactly where they were.
+function rerenderActionBar() {
+  const id = currentId();
+  const old = $(".actionbar");
+  const entry = id && L.cache.get(id);
+  if (old && entry) old.replaceWith(actionBar(entry));
+}
+
 async function setField(fid, value) {
   const id = currentId();
   if (!id) return;
@@ -449,7 +621,7 @@ async function setField(fid, value) {
   } else {
     L.fieldDraft[id] = { ...(L.fieldDraft[id] || {}), [fid]: value };
   }
-  renderCardArea();
+  rerenderActionBar();
 }
 function toggleField(fid) {
   const id = currentId();
@@ -465,36 +637,104 @@ async function saveNote() {
   if (!entry || entry.state?.label == null) return; // unlabeled: the draft rides along with the label
   const note = (L.noteDraft[id] ?? "").trim();
   if (note === (entry.state.note || "")) return;
-  try { await writePartial(id, { note }); delete L.noteDraft[id]; toast("Note saved"); renderCardArea(); }
+  try { await writePartial(id, { note }); delete L.noteDraft[id]; flash("Note saved"); rerenderActionBar(); }
   catch (e) { toast(`Not saved: ${e.message}`, "err"); }
 }
 
 /* ---------- round done ---------- */
-function roundDone() {
-  const r = L.rounds[L.roundIdx];
-  const nextIdx = L.rounds.findIndex((rd) => rd.ids.some((id) => labelOf(id) == null));
-  const allDone = nextIdx === -1;
+function usefulLine() {
   const useful = el("p", { class: "rd-useful" }, "Reading your results…");
   api(`api/task/${enc(L.taskId)}/results`).then((res) => {
     useful.replaceChildren(res.usefulness.headline);
     if (res.usefulness.lines[0]) useful.append(el("span", { class: "rd-line" }, res.usefulness.lines[0]));
   }).catch(() => useful.remove());
+  return useful;
+}
+
+function roundDone() {
+  const r = L.rounds[L.roundIdx];
+  const nextIdx = L.rounds.findIndex((rd) => rd.ids.some((id) => labelOf(id) == null));
+  const allDone = nextIdx === -1;
   return el("div", { class: "round-done" },
     el("div", { class: "rd-mark", "aria-hidden": "true" }, "✓"),
     el("h3", {}, allDone ? "Every round is done" : `Round ${r.n} done`),
     el("p", {}, `${r.ids.length} labeled in this round · ${labeledCount()} of ${L.index.size} overall.`),
-    useful,
+    usefulLine(),
     el("div", { class: "rd-actions" },
       allDone ? null : el("button", { class: "btn primary", type: "button", id: "next-round", onclick: startNextRound }, `Start round ${L.rounds[nextIdx].n} →`, enter("↵")),
       el("a", { class: "btn", href: `#/task/${enc(L.taskId)}/results` }, "See results"),
-      el("button", { class: "btn ghost", type: "button", onclick: () => { L.pos = 0; renderRoundBar(); renderCardArea(); } }, "Review this round")));
+      el("button", { class: "btn ghost", type: "button", onclick: () => { L.pos = 0; renderRoundBar(); renderCardArea({ scroll: true }); } }, `Review this ${unitName().toLowerCase()}`)));
 }
+
+// Waves: the done screen explains the agent's turn and waits for the next wave.
+function waveDone() {
+  const w = waves();
+  const r = L.rounds[L.roundIdx];
+  const nextIdx = L.rounds.findIndex((rd) => rd.ids.some((id) => labelOf(id) == null));
+  const box = el("div", { class: "round-done" });
+  const review = r ? el("button", { class: "btn ghost", type: "button", onclick: () => { L.pos = 0; renderRoundBar(); renderCardArea({ scroll: true }); } }, "Review this wave") : null;
+  const results = el("a", { class: "btn", href: `#/task/${enc(L.taskId)}/results` }, "See results");
+  if (nextIdx !== -1) {
+    box.append(el("div", { class: "rd-mark", "aria-hidden": "true" }, "✓"),
+      el("h3", {}, r ? `Wave ${r.n} done` : "Ready"),
+      el("p", {}, `Wave ${L.rounds[nextIdx].n} of ${w.count} is ready — ${L.rounds[nextIdx].ids.filter((id) => labelOf(id) == null).length} cards.`),
+      el("div", { class: "rd-actions" },
+        el("button", { class: "btn primary", type: "button", id: "next-round", onclick: startNextRound }, `Start wave ${L.rounds[nextIdx].n} →`, enter("↵")), results, review));
+    return box;
+  }
+  if (L.rounds.length >= w.count) {
+    box.append(el("div", { class: "rd-mark", "aria-hidden": "true" }, "✓"),
+      el("h3", {}, `All ${w.count} waves are done`),
+      el("p", {}, `You labeled ${labeledCount()} of ${L.index.size}. The stand-in's labels fill the rest; Results shows how far to trust them (checked on the last wave, which it predicted before you saw it).`),
+      usefulLine(),
+      el("div", { class: "rd-actions" }, el("a", { class: "btn primary", href: `#/task/${enc(L.taskId)}/results` }, "See final labels"), review));
+    return box;
+  }
+  // The agent's turn.
+  const next = L.rounds.length + 1;
+  const last = next === w.count;
+  const status = el("p", { class: "rd-status" });
+  const paint = () => {
+    const s = waves();
+    status.replaceChildren(s.candidates
+      ? `Stand-in labels so far: ${s.fresh} of ${s.candidates} unlabeled items inferred from your latest labels${s.covered > s.fresh ? ` (${s.covered - s.fresh} older ones to redo)` : ""}.`
+      : "Waiting for the agent.");
+  };
+  paint();
+  box.append(el("div", { class: "rd-mark", "aria-hidden": "true" }, "✓"),
+    el("h3", {}, r ? `Wave ${r.n} of ${w.count} done — thank you` : "Waiting for the first wave"),
+    el("div", { class: "rd-explain" },
+      el("p", {}, `An agent now reads your ${labeledCount()} labels (and notes) and infers a label, with a confidence, for each of the other ${w.candidates} items.`),
+      el("p", {}, last
+        ? `Then it picks wave ${next}, the last one, at random from those items and records its predictions first — your labels on it are the honest check of how often it matches you.`
+        : `Then it picks wave ${next} from the items it is least sure about or disagrees with a model on, and from strata you have not covered — the labels that teach it the most.`),
+      el("p", {}, `Wave ${next} appears here by itself when it is ready (this page checks every 15 seconds). You can close the tab; nothing is lost.`)),
+    status,
+    el("div", { class: "rd-actions" }, results, review));
+  startPolling(() => { paint(); if (L.rounds.length >= next) renderCardArea(); });
+  return box;
+}
+
+function startPolling(onTick) {
+  stopPolling();
+  const tick = async () => {
+    if (L.tab !== "label" || !$("#card-slot")) { stopPolling(); return; }
+    const before = L.rounds.length;
+    try { await refreshTask(); } catch { return; }
+    if (L.rounds.length > before) { toast(`Wave ${L.rounds.length} is ready`); renderRoundBar(); refreshTaskRow(); Shell.refreshNav(); }
+    onTick();
+  };
+  L.pollTimer = setInterval(tick, 15000);
+  setTimeout(() => { if (L.pollTimer) tick(); }, 300);
+}
+function stopPolling() { if (L.pollTimer) { clearInterval(L.pollTimer); L.pollTimer = null; } }
+
 function startNextRound() {
   const nextIdx = L.rounds.findIndex((rd) => rd.ids.some((id) => labelOf(id) == null));
   if (nextIdx === -1) return;
   L.roundIdx = nextIdx;
   L.pos = firstUnlabeled(nextIdx) ?? 0;
-  renderRoundBar(); renderCardArea();
+  renderRoundBar(); renderCardArea({ scroll: true });
 }
 
 /* ---------- items tab ---------- */
@@ -511,8 +751,8 @@ function itemsRows() {
 }
 function renderItems(body) {
   const filters = [["all", "All"], ["unlabeled", "Unlabeled"], ["labeled", "Labeled"], ["unsure", "Unsure"], ["noted", "With note"]];
-  const roundSel = el("select", { class: "kind-select", "aria-label": "Round" }, el("option", { value: "all" }, "All rounds"),
-    L.rounds.map((r) => el("option", { value: String(r.n), selected: L.itemsRound === String(r.n) }, `Round ${r.n}`)));
+  const roundSel = el("select", { class: "kind-select", "aria-label": unitName() }, el("option", { value: "all" }, waves() ? "All waves" : "All rounds"),
+    L.rounds.map((r) => el("option", { value: String(r.n), selected: L.itemsRound === String(r.n) }, `${unitName()} ${r.n}`)));
   roundSel.addEventListener("change", () => { L.itemsRound = roundSel.value; L.itemsSel = 0; render(); });
   const rows = itemsRows();
   L.itemsSel = Math.min(L.itemsSel, Math.max(0, rows.length - 1));
@@ -522,7 +762,7 @@ function renderItems(body) {
     el("span", { class: "muted" }, `${rows.length} item${rows.length === 1 ? "" : "s"}`)));
   if (!rows.length) { body.append(el("div", { class: "empty" }, "Nothing under this filter.")); return; }
   const table = el("table", { class: "items-table" },
-    el("thead", {}, el("tr", {}, el("th", {}, "Round"), el("th", {}, "Item"), el("th", {}, "When"), el("th", {}, "Your label"), el("th", {}, "Note"))),
+    el("thead", {}, el("tr", {}, el("th", {}, unitName()), el("th", {}, "Item"), el("th", {}, "When"), el("th", {}, "Your label"), el("th", {}, "Note"))),
     el("tbody", {}, rows.map((x, i) => {
       const l = labelDef(x.label);
       const tr = el("tr", { class: i === L.itemsSel ? "sel" : "", "data-id": x.id, tabindex: "-1" },
@@ -549,20 +789,21 @@ async function renderResults(body) {
   const c = res.counts;
   const u = res.usefulness;
   const out = [];
+  if (res.waves) out.push(...finalLabelsSection(res.waves, lab));
   out.push(el("section", { class: `useful v-${u.verdict}` },
-    el("div", { class: "eyebrow" }, "Is my labeling useful?"),
+    el("div", { class: "eyebrow" }, res.waves ? "Your labels alone — is my labeling useful?" : "Is my labeling useful?"),
     el("p", { class: "useful-head" }, u.headline),
     u.lines.length ? el("ul", {}, u.lines.map((x) => el("li", {}, x))) : null));
   const standins = res.models.filter((m) => m.kind === "standin");
   out.push(el("div", { class: "stat-grid" },
-    stat("Labeled by you", `${c.humanLabeled}`, `of ${c.items} items · ${c.rounds.done} of ${c.rounds.total} rounds done`),
+    stat("Labeled by you", `${c.humanLabeled}`, `of ${c.items} items · ${c.rounds.done} of ${res.waves ? res.waves.status.count : c.rounds.total} ${res.waves ? "waves" : "rounds"} done`),
     stat("Disagreements found", `${u.disagreements || 0}`, "items where a model differs from you"),
     stat("Unsure", `${c.humanAbstained}`, "left out of agreement"),
     standins.length ? stat("Stand-in coverage", `${standins.map((s) => s.labeled).reduce((a, b) => Math.max(a, b), 0)}`, "items labeled by a model stand-in") : null));
   if (t.blind) out.push(el("p", { class: "hint-line" }, "These numbers reveal model answers for items you have labeled. Unlabeled cards stay blind."));
   const fillBox = el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: L.fill }), " Fill items I haven't labeled with stand-in labels");
   fillBox.querySelector("input").addEventListener("change", (e) => { L.fill = e.target.checked; store.set("fill", L.fill); render(); });
-  if (standins.length) out.push(fillBox);
+  if (standins.length && !res.waves) out.push(fillBox);
 
   const models = res.models.filter((m) => m.kind === "model");
   if (models.length) {
@@ -570,8 +811,10 @@ async function renderResults(body) {
     out.push(agreementTable(models, res));
   }
   if (standins.length) {
-    out.push(el("h3", { class: "sec" }, "Can the stand-in replace you?"));
-    out.push(el("p", { class: "hint-line" }, "Stand-in labels compared with your human labels only — never with filled ones."));
+    out.push(el("h3", { class: "sec" }, res.waves ? "Stand-in against all your labels" : "Can the stand-in replace you?"));
+    out.push(el("p", { class: "hint-line" }, res.waves
+      ? "Includes waves the stand-in had already seen your labels for (in-sample). The honest number is the hold-out above."
+      : "Stand-in labels compared with your human labels only — never with filled ones."));
     out.push(agreementTable(standins, res));
   }
   for (const m of models) {
@@ -591,6 +834,74 @@ async function renderResults(body) {
     }
   }
   body.replaceChildren(...out);
+}
+
+const fmtRate = (r) => (r && r.compared ? `${pct(r.rate)}` : "—");
+const fmtCI = (r) => (r && r.compared ? `${pct(r.ci[0])}–${pct(r.ci[1])} · n=${r.compared}` : "no data yet");
+
+// Waves: the final label set and how far to trust its stand-in part.
+function finalLabelsSection(w, lab) {
+  const s = w.status, e = w.evaluation, f = w.final;
+  const out = [];
+  const h = e.holdout;
+  let verdictText, cls;
+  if (e.verdict === "accepted") { cls = "useful"; verdictText = `The stand-in matched you on ${h.agree} of ${h.compared} hold-out cards (${pct(h.rate)}, 95% ${pct(h.ci[0])}–${pct(h.ci[1])}), at or above the ${pct(e.accept)} bar set in advance. Its labels can fill the rest.`; }
+  else if (e.verdict === "rejected") { cls = "one-sided"; verdictText = `The stand-in matched you on only ${h.agree} of ${h.compared} hold-out cards (${pct(h.rate)}, 95% ${pct(h.ci[0])}–${pct(h.ci[1])}), below the ${pct(e.accept)} bar. Use the human-only numbers; the combined ones are not trustworthy. (An agent can add another wave with next-wave --extra.)`; }
+  else { cls = "directional"; verdictText = s.frozen < s.count || s.state === "labeling"
+    ? `Not measured yet: the last wave is a random sample the stand-in predicts before you see it. Your labels on it are the honest check (bar: ${pct(e.accept)}).`
+    : `No hold-out predictions recorded, so the stand-in's accuracy is unknown. Treat combined numbers as unverified.`; }
+  out.push(el("section", { class: `useful v-${cls === "useful" ? "useful" : cls}` },
+    el("div", { class: "eyebrow" }, `Final labels · waves ${Math.min(s.frozen, s.count)} of ${s.count}${s.state === "inferring" ? " · the agent is inferring" : s.state === "labeling" ? ` · wave ${s.current} in progress` : ""}`),
+    el("p", { class: "useful-head" }, verdictText)));
+  out.push(el("div", { class: "stat-grid" },
+    stat("Your labels", `${f.human}`, `authoritative${f.humanAbstained ? ` · ${f.humanAbstained} unsure` : ""}`),
+    stat("Stand-in labels", `${f.standin}`, `fill the rest (${s.standin})`),
+    f.uncovered ? stat("No label yet", `${f.uncovered}`, "neither you nor the stand-in") : null,
+    stat("Hold-out accuracy", fmtRate(h), fmtCI(h))));
+
+  // Each model: human-only vs combined, side by side and labeled.
+  out.push(el("h3", { class: "sec" }, "Each model: your labels only vs. the final labels"));
+  out.push(el("p", { class: "hint-line" }, "Human-only is measured on cards you labeled (waves are not a random sample, so read per-stratum numbers too). Combined adds the stand-in's labels for everything else — only as good as the hold-out says."));
+  out.push(el("div", { class: "table-wrap" }, el("table", { class: "agree-table" },
+    el("thead", {}, el("tr", {}, el("th", {}, ""), el("th", {}, "Human-only"), el("th", { class: "ci-col" }, "95% interval"), el("th", { class: `${e.verdict === "accepted" ? "" : "dim"}` }, "Combined (human + stand-in)"), el("th", { class: "ci-col" }, "95% interval"))),
+    el("tbody", {}, f.models.map((m) => el("tr", {},
+      el("th", { scope: "row" }, m.id),
+      el("td", { class: "big-num" }, fmtRate(m.humanOnly)), el("td", { class: "ci-col" }, ciBar(m.humanOnly), el("div", { class: "ci-lab" }, fmtCI(m.humanOnly))),
+      el("td", { class: `big-num${e.verdict === "accepted" ? "" : " dim"}` }, fmtRate(m.combined)), el("td", { class: `ci-col${e.verdict === "accepted" ? "" : " dim"}` }, ciBar(m.combined), el("div", { class: "ci-lab" }, fmtCI(m.combined)))))))));
+
+  // Per wave: predictions recorded before you labeled.
+  if (e.byWave.length) {
+    out.push(el("h3", { class: "sec" }, "Stand-in vs. you, predicted before you labeled"));
+    out.push(el("p", { class: "hint-line" }, "Each wave file stores the stand-in's prediction for its cards at the moment the wave was frozen. Targeted waves were picked for being hard, so they understate accuracy; random waves are the estimate."));
+    out.push(el("div", { class: "table-wrap" }, el("table", { class: "agree-table" },
+      el("thead", {}, el("tr", {}, el("th", {}, "Wave"), el("th", {}, "Picked by"), el("th", {}, "Agrees"), el("th", { class: "ci-col" }, "95% interval"), el("th", {}, "Predicted → your mix"))),
+      el("tbody", {}, e.byWave.map((r) => el("tr", {},
+        el("th", { scope: "row" }, `Wave ${r.n}`),
+        el("td", {}, r.strategy === "random" ? "random (hold-out)" : r.strategy),
+        el("td", { class: "big-num" }, fmtRate(r)),
+        el("td", { class: "ci-col" }, ciBar(r), el("div", { class: "ci-lab" }, `${fmtCI(r)}${r.unlabeled ? ` · ${r.unlabeled} to label` : ""}${r.abstained ? ` · ${r.abstained} stand-in unsure` : ""}`)),
+        el("td", { class: "conf" }, mixText(r.predicted, lab), el("span", { class: "muted" }, " vs "), mixText(r.truth, lab))))))));
+    const cal = e.calibration;
+    out.push(el("p", { class: "hint-line" }, `Calibration — stand-in confidence ≥0.8: ${fmtRate(cal.high)} (n=${cal.high.compared}) · 0.6–0.8: ${fmtRate(cal.mid)} (n=${cal.mid.compared}) · <0.6: ${fmtRate(cal.low)} (n=${cal.low.compared}). If high confidence is not more accurate, its confidences mean little.`));
+    if (e.misses.length) {
+      out.push(el("details", { class: "dis" }, el("summary", {}, `Stand-in misses · ${e.misses.length}`),
+        el("ul", {}, e.misses.map((x) => el("li", {},
+          el("a", { href: `#/task/${enc(L.taskId)}/item/${enc(x.item_id)}` }, x.title || x.item_id),
+          el("span", { class: "muted" }, ` — wave ${x.wave}: stand-in ${lab(x.predicted)}${x.confidence != null ? ` (${x.confidence})` : ""}, you ${lab(x.human)}`))))));
+    }
+  }
+  return out;
+}
+function mixText(m, lab) {
+  const e = Object.entries(m || {});
+  return e.length ? e.map(([k, v]) => `${lab(k)} ${v}`).join(", ") : "—";
+}
+function ciBar(r) {
+  if (!r || !r.compared) return el("div", { class: "ci" });
+  const [lo, hi] = r.ci;
+  return el("div", { class: "ci" },
+    el("i", { class: "ci-range", style: `left:${(lo * 100).toFixed(1)}%;width:${((hi - lo) * 100).toFixed(1)}%` }),
+    el("i", { class: "ci-point", style: `left:${(r.rate * 100).toFixed(1)}%` }));
 }
 
 function stat(title, big, sub) {
@@ -672,19 +983,24 @@ function distBar(dist, n, lab) {
 
 /* ---------- keyboard ---------- */
 App.help.label = [
-  ["1 · 2 · 3 …", "pick a label (keys shown on the buttons); saves and moves on"],
+  ["1 · 2 · 3 …", "pick a label (keys shown on the buttons); saves and shows the next card"],
   ["field keys", "toggle a checkbox field (shown on the field)"],
-  ["j / k  or  → / ←", "next / previous card in the round"],
-  ["u", "undo your last label"],
+  ["s", "skip for now — the card comes back at the end of the wave (j if the task uses s)"],
+  ["j / k  or  → / ←", "next / previous card"],
+  ["u", "undo your last label — from any card, the done screen, Items or Results"],
   ["n", "type a note (Enter saves it; it also rides along with the next label)"],
+  ["i", "show or hide the instructions"],
   ["Space", "play / pause the item's audio"],
-  ["Enter", "start the next round (on the round-done screen)"],
+  ["Enter", "start the next round or wave (on the done screen)"],
   ["Shift+L · I · R", "Label · Items · Results tab"],
 ];
 App.keyHandlers.label = (e) => {
   const k = e.key;
   const tabKey = { L: "", I: "/items", R: "/results" }[k];
   if (tabKey != null) { location.hash = `#/task/${enc(L.taskId)}${tabKey}`; return true; }
+  const keys = taskKeys();
+  const lk = k.toLowerCase();
+  if (k === "u" && !keys.has("u")) { undo(); return true; }
   if (L.tab === "items") {
     const rows = $$(".items-table tbody tr");
     if (k === "j" || k === "k" || k === "ArrowDown" || k === "ArrowUp") {
@@ -698,21 +1014,20 @@ App.keyHandlers.label = (e) => {
     return false;
   }
   if (L.tab !== "label") return false;
+  if (k === "i" && !keys.has("i") && L.task.instructions) { setInstructions(!L.instrOpen); return true; }
   if (L.pos >= roundIds().length) {
     if (k === "Enter") { startNextRound(); return true; }
     if (k === "k" || k === "ArrowLeft") { step(-1); return true; }
-    if (k === "u") { undo(); return true; }
     return false;
   }
-  const lk = k.toLowerCase();
   const l = L.task.labels.find((x) => x.key === lk);
   if (l) { pick(l.id); return true; }
   const f = L.task.fields.find((x) => x.key === lk && x.type === "checkbox");
   if (f) { toggleField(f.id); return true; }
+  if (k === "s" && !keys.has("s")) { skipForNow(); return true; }
   if (k === "j" || k === "ArrowRight") { step(1); return true; }
   if (k === "k" || k === "ArrowLeft") { step(-1); return true; }
-  if (k === "u") { undo(); return true; }
-  if (k === "n") { const n = $("#note"); if (n) { n.focus(); n.select(); } return true; }
+  if (k === "n") { openNote(); return true; }
   if (k === " ") { const a = $(".lcard audio"); if (a) { if (a.paused) a.play().catch(() => {}); else a.pause(); return true; } }
   return false;
 };

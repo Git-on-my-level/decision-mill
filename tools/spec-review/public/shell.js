@@ -50,7 +50,8 @@ const Shell = {
         t.question ? el("p", { class: "hc-q" }, t.question) : null,
         el("div", { class: "meter wide" }, el("i", { class: "m-decided", style: `width:${(pctDone * 100).toFixed(1)}%` })),
         el("div", { class: "hc-stats" }, `${t.labeled} of ${t.items} labeled · `,
-          t.rounds.current ? `round ${t.rounds.current} of ${t.rounds.total} next` : "all rounds done",
+          t.waves ? (t.waves.state === "inferring" ? `waiting for wave ${t.waves.frozen + 1} of ${t.waves.count}` : t.rounds.current ? `wave ${t.rounds.current} of ${t.rounds.total}` : "all waves done")
+            : t.rounds.current ? `round ${t.rounds.current} of ${t.rounds.total} next` : "all rounds done",
           t.standinReviewers ? ` · ${t.standinReviewers} stand-in` : "",
           t.errors ? el("b", { class: "err" }, ` · ${t.errors} error(s)`) : "")));
     }
@@ -75,7 +76,9 @@ function taskRowEl(t) {
     el("div", { class: "name" }, t.title),
     el("div", { class: "meter", role: "img", "aria-label": `${t.labeled} of ${t.items} labeled` },
       el("i", { class: "m-decided", style: `width:${(100 * t.labeled / denom).toFixed(1)}%` })),
-    el("div", { class: "stats" }, `${t.labeled}/${t.items} labeled`, t.rounds.current ? ` · round ${t.rounds.current}/${t.rounds.total}` : " · done"));
+    el("div", { class: "stats" }, `${t.labeled}/${t.items} labeled`,
+      t.waves && t.waves.state === "inferring" ? ` · waiting for wave ${t.waves.frozen + 1}`
+        : t.rounds.current ? ` · ${t.waves ? "wave" : "round"} ${t.rounds.current}/${t.rounds.total}` : " · done"));
 }
 
 /* ---------- router ---------- */
