@@ -9,27 +9,18 @@
 
 import { getPath, isAbstain } from "./task.js";
 import { buildRounds, currentRound } from "./rounds.js";
+import { wilson, labelsFor } from "./stats.js";
+import { evaluateStandin, humanStatesOf, standinStatesOf, waveReviewer, waveStatus } from "./waves.js";
 
 const stratumOf = (it) => (it.stratum == null || it.stratum === "" ? "(none)" : String(it.stratum));
 
-// Wilson score interval, 95%. Behaves at n small and p near 0/1, unlike p±1.96·se.
-export function wilson(k, n, z = 1.96) {
-  if (!n) return [0, 1];
-  const p = k / n;
-  const den = 1 + (z * z) / n;
-  const centre = (p + (z * z) / (2 * n)) / den;
-  const half = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / den;
-  return [Math.max(0, centre - half), Math.min(1, centre + half)];
-}
-
-// Labels needed for a ±h interval at agreement p (normal approximation).
-export const labelsFor = (p, h = 0.07) => Math.ceil((1.96 * 1.96 * Math.max(p * (1 - p), 0.05)) / (h * h));
+export { wilson, labelsFor };
 
 // Ground truth per item. Human labels outrank everything: the selected reviewer's
 // human label if they have one, else (when no reviewer is selected) the most recent
 // human label from anyone. With `fill`, items no human labeled fall back to the
 // most recent model-standin label and are marked filled.
-export function truthMap({ task, labels, reviewer, fill = false }) {
+export function truthMap({ task, labels, reviewer, fill = false, standinName = null }) {
   const abstainIds = new Set(task.labels.filter(isAbstain).map((l) => l.id));
   const humans = [], standins = [];
   for (const [name, r] of Object.entries(labels.reviewers || {})) {
@@ -54,7 +45,7 @@ export function truthMap({ task, labels, reviewer, fill = false }) {
   const human = pickLatest(humans, "human", reviewerHas ? reviewer : null);
   for (const [id, s] of human) truth.set(id, { label: s.label, abstain: abstainIds.has(s.label), filled: false, by: s.by, state: s });
   if (fill) {
-    const standin = pickLatest(standins, "model-standin", null);
+    const standin = pickLatest(standins, "model-standin", standinName);
     for (const [id, s] of standin) {
       if (truth.has(id)) continue;
       truth.set(id, { label: s.label, abstain: abstainIds.has(s.label), filled: true, by: s.by, state: s });
@@ -162,8 +153,10 @@ function compare(name, kind, items, truth, verdictOf, labelIds) {
   return res;
 }
 
-export function computeResults({ task, items, labels, reviewer = null, fill = false }) {
-  const truth = truthMap({ task, labels, reviewer, fill });
+export function computeResults({ task, items, labels, reviewer = null, fill = false, waves = null }) {
+  // In waves mode the fill comes from the task's own stand-in only.
+  const standinName = task.waves ? task.waves.standin : null;
+  const truth = truthMap({ task, labels, reviewer, fill, standinName });
   const abstain = new Set(task.labels.filter(isAbstain).map((l) => l.id));
   const labelIds = { all: new Set(task.labels.map((l) => l.id)), abstain };
   const byId = new Map(items.map((it) => [it.id, it]));
@@ -178,7 +171,7 @@ export function computeResults({ task, items, labels, reviewer = null, fill = fa
   for (const t of truth.values()) if (!t.filled) counts.labelDist[t.label] = (counts.labelDist[t.label] || 0) + 1;
 
   const humanIds = new Set(human.map((t) => t.state.item_id));
-  const rounds = buildRounds(items, task);
+  const rounds = task.waves && waves ? waves.map((w) => ({ n: w.wave, ids: w.ids })) : buildRounds(items, task);
   const cur = currentRound(rounds, humanIds);
   counts.rounds = { total: rounds.length, done: rounds.filter((r) => r.ids.every((id) => humanIds.has(id))).length, current: cur < rounds.length ? cur + 1 : null };
 
@@ -215,7 +208,52 @@ export function computeResults({ task, items, labels, reviewer = null, fill = fa
     if (t && !t.filled) { row.labeled++; row.dist[t.label] = (row.dist[t.label] || 0) + 1; }
   }
 
-  return { task: task.id, reviewer, fill, counts, models, strata: Object.values(strata), usefulness: usefulness(counts, models, task) };
+  const out = { task: task.id, reviewer, fill, counts, models, strata: Object.values(strata), usefulness: usefulness(counts, models, task) };
+  if (task.waves && waves) out.waves = wavesResults({ task, items, labels, reviewer, waves });
+  return out;
+}
+
+// Waves mode: the held-out stand-in estimate and the final label set (human labels
+// authoritative, the stand-in for the rest), with each model's agreement computed
+// on human labels only and on the combined set — never mixed up.
+export function wavesResults({ task, items, labels, reviewer, waves }) {
+  const cfg = task.waves;
+  const who = waveReviewer(cfg, labels, reviewer);
+  const human = humanStatesOf(labels, who);
+  const standin = standinStatesOf(labels, cfg.standin);
+  const status = waveStatus({ task, items, waves, labels, reviewer: who });
+  const evaluation = evaluateStandin({ task, waves, human });
+  const abstain = new Set(task.labels.filter(isAbstain).map((l) => l.id));
+  let fromStandin = 0, uncovered = 0;
+  const dist = { human: {}, standin: {} };
+  for (const it of items) {
+    const h = human.get(it.id);
+    if (h) { dist.human[h.label] = (dist.human[h.label] || 0) + 1; continue; }
+    const s = standin.get(it.id);
+    if (s) { fromStandin++; dist.standin[s.label] = (dist.standin[s.label] || 0) + 1; } else uncovered++;
+  }
+  const humanOnly = computeAgreement({ task, items, labels, reviewer: who, fill: false });
+  const combined = computeAgreement({ task, items, labels, reviewer: who, fill: true });
+  const models = task.models.map((m) => {
+    const a = humanOnly.find((x) => x.id === m.id), b = combined.find((x) => x.id === m.id);
+    const pick = (r) => (r ? { rate: r.rate, ci: r.ci, compared: r.compared, agree: r.agree, confusion: r.confusion } : null);
+    return { id: m.id, humanOnly: pick(a), combined: pick(b) };
+  });
+  return {
+    status, evaluation,
+    final: { items: items.length, human: human.size, humanAbstained: [...human.values()].filter((s) => abstain.has(s.label)).length, standin: fromStandin, uncovered, dist, models },
+  };
+}
+
+// Model-vs-truth agreement only (no stand-ins, no curves): used twice above.
+function computeAgreement({ task, items, labels, reviewer, fill }) {
+  const truth = truthMap({ task, labels, reviewer, fill, standinName: task.waves ? task.waves.standin : null });
+  const abstain = new Set(task.labels.filter(isAbstain).map((l) => l.id));
+  const labelIds = { all: new Set(task.labels.map((l) => l.id)), abstain };
+  return task.models.map((m) => {
+    const pos = positiveLabel(m, items);
+    return compare(m.id, "model", items, truth, (it) => modelVerdict(m, it, pos), labelIds);
+  });
 }
 
 // Plain-language read of whether the labels so far can carry a decision.

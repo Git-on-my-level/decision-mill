@@ -19,6 +19,7 @@ import { discoverTasks, loadTask, getPath, isAbstain } from "./task.js";
 import { readTaskLabels, reviewerFile, safeReviewer, buildRow, appendRows, labeledStates } from "./labelstore.js";
 import { buildRounds, currentRound } from "./rounds.js";
 import { computeResults, positiveLabel, modelVerdict } from "./results.js";
+import { readWaves, nextWave, waveStatus } from "./waves.js";
 
 // Task cache keyed by the mtimes of task.yaml and items.jsonl, so editing either
 // file is picked up on the next request without a restart.
@@ -35,6 +36,29 @@ export function getTask(entry) {
   const value = { ...loaded, dir: entry.dir, byId: new Map(loaded.items.map((it) => [it.id, it])), rounds: buildRounds(loaded.items, loaded.task) };
   cache.set(entry.dir, { key, value });
   return value;
+}
+
+// The task's rounds: fixed rounds, or (waves mode) the frozen waves, read fresh on
+// every request because an agent freezes the next wave from the CLI.
+export function roundsFor(entry, t) {
+  if (!t.task.waves) return { rounds: t.rounds, waves: null, errors: [] };
+  const { waves, errors } = readWaves(entry.dir);
+  return { rounds: waves.map((w) => ({ n: w.wave, ids: w.ids.filter((id) => t.byId.has(id)), pinned: true, strategy: w.strategy })), waves, errors };
+}
+
+export const modelVerdictsFn = (t) => {
+  const pos = new Map(t.task.models.map((m) => [m.id, positiveLabel(m, t.items)]));
+  return (it) => t.task.models.map((m) => modelVerdict(m, it, pos.get(m.id)));
+};
+
+// Waves mode: freeze wave 1 the first time the task is opened, so a fresh task is
+// labelable without an agent. Later waves are frozen by the agent (labels.js
+// next-wave) once stand-in labels exist. Exclusive create: concurrent opens are safe.
+function ensureFirstWave(entry, t, reviewer) {
+  if (!t.task.waves) return;
+  const { waves, errors } = readWaves(entry.dir);
+  if (waves.length || errors.length || !t.items.length) return;
+  nextWave({ dir: entry.dir, task: t.task, items: t.items, labels: readTaskLabels(entry.dir), reviewer, opts: { modelVerdicts: modelVerdictsFn(t) } });
 }
 
 // A reviewer's own human labels (what blind mode and progress are keyed on).
@@ -57,11 +81,14 @@ export function taskSummaries(roots, reviewer) {
     const mine = humanStates(labels, reviewer);
     const labeled = t.items.filter((it) => mine.has(it.id)).length;
     const standin = Object.values(labels.reviewers).filter((r) => [...r.states.values()].some((s) => s.label != null && s.source === "model-standin")).length;
-    const cur = currentRound(t.rounds, mine);
+    const { rounds, waves } = roundsFor(entry, t);
+    const cur = currentRound(rounds, mine);
+    const ws = waves ? waveStatus({ task: t.task, items: t.items, waves, labels, reviewer }) : null;
     return {
       id: entry.id, title: t.task.title, question: t.task.question, blind: t.task.blind,
       items: t.items.length, labeled, standinReviewers: standin,
-      rounds: { total: t.rounds.length, done: t.rounds.filter((r) => r.ids.every((id) => mine.has(id))).length, current: cur < t.rounds.length ? cur + 1 : null, size: t.task.round_size },
+      rounds: { total: ws ? ws.count : rounds.length, done: rounds.filter((r) => r.ids.every((id) => mine.has(id))).length, current: cur < rounds.length ? cur + 1 : null, size: ws ? ws.size : t.task.round_size },
+      waves: ws ? { state: ws.state, frozen: ws.frozen, count: ws.count, current: ws.current } : null,
       errors: t.errors.length, warnings: t.warnings.length,
     };
   });
@@ -151,11 +178,13 @@ export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, j
   const t = getTask(entry);
 
   if (!sub && req.method === "GET") {
+    ensureFirstWave(entry, t, reviewer);
     const labels = readTaskLabels(entry.dir);
     const own = ownStates(labels, reviewer);
     const mine = humanStates(labels, reviewer);
+    const { rounds, waves, errors: waveErrors } = roundsFor(entry, t);
     const roundOf = new Map();
-    for (const r of t.rounds) for (const id of r.ids) roundOf.set(id, r.n);
+    for (const r of rounds) for (const id of r.ids) roundOf.set(id, r.n);
     const index = t.items.map((it) => {
       const s = own.get(it.id);
       const row = { id: it.id, title: it.title || null, round: roundOf.get(it.id), label: s && s.source !== "model-standin" ? s.label : null, note: s ? s.note : null,
@@ -163,9 +192,10 @@ export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, j
       if (!t.task.blind || mine.has(it.id)) row.stratum = it.stratum ?? null;
       return row;
     });
-    const cur = currentRound(t.rounds, mine);
-    return json(res, 200, { task: t.task, errors: t.errors, warnings: t.warnings, reviewer, index,
-      rounds: t.rounds.map((r) => ({ n: r.n, ids: r.ids, pinned: r.pinned })), current: cur });
+    const cur = currentRound(rounds, mine);
+    return json(res, 200, { task: t.task, errors: [...t.errors, ...waveErrors], warnings: t.warnings, reviewer, index,
+      rounds: rounds.map((r) => ({ n: r.n, ids: r.ids, pinned: r.pinned, strategy: r.strategy })), current: cur,
+      waves: waves ? waveStatus({ task: t.task, items: t.items, waves, labels, reviewer }) : null });
   }
 
   if (sub === "item" && req.method === "GET") {
@@ -206,9 +236,11 @@ export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, j
     // Default truth is the requesting reviewer when they have labels, else every
     // human (latest wins) — what an agent calling without identity wants.
     const who = want ? safeReviewer(want) : labels.reviewers[me] ? me : null;
-    const out = computeResults({ task: t.task, items: t.items, labels, reviewer: who, fill: u.searchParams.get("fill") === "1" });
+    const { waves } = roundsFor(entry, t);
+    const out = computeResults({ task: t.task, items: t.items, labels, reviewer: who, fill: u.searchParams.get("fill") === "1", waves });
     const titles = new Map(t.items.map((it) => [it.id, it.title || null]));
     for (const mm of out.models) for (const d of mm.disagreements) d.title = titles.get(d.item_id);
+    if (out.waves) for (const x of out.waves.evaluation.misses) x.title = titles.get(x.item_id);
     return json(res, 200, out);
   }
 

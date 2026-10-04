@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // CLI: validate all spec files against FORMAT.md v1, and every label task against
-// LABELS.md v1. Exit 1 on any error.
+// LABELS.md v1 (including frozen waves). Exit 1 on any error.
 // Warnings (vocabulary/consistency drift) are printed but do not fail the run.
 // With --locators, also checks every evidence locator against the configured code
 // checkout (REPO_ROOT); those count as errors.
@@ -10,6 +10,7 @@ import { validateSpecText, checkLocators } from "./lib/parser.js";
 import { SPECS_DIRS, LABELS_ROOTS, REPO_ROOT, EXCLUDED, LOCATOR_PREFIX, DELEGATED_PATHS } from "./lib/config.js";
 import { discoverTasks, loadTask } from "./lib/task.js";
 import { readTaskLabels } from "./lib/labelstore.js";
+import { validateWaves } from "./lib/waves.js";
 
 const CHECK_LOCATORS = process.argv.includes("--locators");
 // --strict: treat vocabulary/consistency warnings as failures (CI / pre-review gate,
@@ -76,7 +77,9 @@ for (const { dir, f } of specFiles) {
 }
 // Label tasks: structure only (task.yaml, items.jsonl, label rows that parse).
 for (const t of discoverTasks(LABELS_ROOTS)) {
-  const { items, errors, warnings } = loadTask(t.dir, t.id);
+  const { task, items, errors, warnings } = loadTask(t.dir, t.id);
+  const wv = validateWaves(t.dir, task, items);
+  errors.push(...wv.errors); warnings.push(...wv.warnings);
   const labels = readTaskLabels(t.dir);
   const bad = Object.entries(labels.reviewers).filter(([, r]) => r.bad).map(([n, r]) => `labels/${n}.jsonl: ${r.bad} unparseable row(s) (skipped)`);
   if (errors.length) {

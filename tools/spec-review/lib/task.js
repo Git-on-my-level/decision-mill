@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import * as yaml from "js-yaml";
+import { normalizeWaves } from "./waves.js";
 
 export const CONTENT_TYPES = new Set(["transcript", "markdown", "text"]);
 export const FIELD_TYPES = new Set(["checkbox", "choice", "text"]);
@@ -49,6 +50,12 @@ export function normalizeTask(raw, dirName) {
   t.stratify = t.stratify === "proportional" ? "proportional" : "balanced";
   if (raw && raw.stratify != null && raw.stratify !== t.stratify) warnings.push(`unknown stratify '${raw.stratify}' (want balanced|proportional)`);
   t.summary = t.summary === "open" ? "open" : "collapsed";
+  // Which item.meta keys the card shows, in order. null = the default set
+  // (started_at, duration_s, word_count, source); other keys stay hidden.
+  if (t.meta_display != null && !Array.isArray(t.meta_display)) { warnings.push("meta_display must be a list of meta keys"); t.meta_display = null; }
+  t.meta_display = Array.isArray(t.meta_display) ? t.meta_display.map(String) : null;
+  // Waves replace rounds when set (see waves.js and LABELS.md#waves).
+  t.waves = normalizeWaves(raw && raw.waves, t.id, errors, warnings);
 
   const used = new Set();
   const labels = Array.isArray(t.labels) ? t.labels : [];
