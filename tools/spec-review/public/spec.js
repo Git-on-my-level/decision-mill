@@ -1,8 +1,12 @@
-/* Spec Review Bench — thin human editor over the machine-readable specs. */
+/* Spec mode — thin human editor over the machine-readable specs.
+   Mounted by shell.js at #/spec/<set>/<slug>; shared helpers live in common.js. */
+// Scoped: each mode file runs in its own function so top-level names (both
+// modes have a renderItems) can never collide; only the mode object is global.
+(() => {
 "use strict";
 
-const $ = (sel, el = document) => el.querySelector(sel);
 const state = {
+  set: null,   // spec-set id (several specs directories can be served at once)
   specs: [],
   slug: null,
   items: [],
@@ -14,57 +18,31 @@ const state = {
   kind: "all",   // all | divergence | invariant | failure-case | unknown
   focusId: null,
   drafts: Object.create(null), // itemId -> unsent note text, survives re-render
-  // Filled from /api/config at boot. The locator scheme is a per-project knob
-  // (see FORMAT.md), so nothing in this file may hardcode it.
-  config: { locatorScheme: "repo", locatorPrefix: "repo:", projectName: "", reviewer: "reviewer" },
+  // The locator scheme is a per-project knob (see FORMAT.md) read from
+  // App.config at boot, so nothing in this file may hardcode it.
+  get config() { return App.config; },
 };
 
 const KIND_LABEL = { divergence: "DIV", invariant: "INV", "failure-case": "FC", unknown: "UNK", feature: "FEAT", general: "GEN" };
 const DECIDABLE = (it) => it.kind !== "general";
 
 // Single-reviewer tool: the identity picker was noise. Notes written by agents
-// (e.g. metrics-agent) still carry their own `by` in the spec files.
-function who() { return state.config.reviewer || "reviewer"; }
-
-async function api(path, opts) {
-  const res = await fetch(path, opts);
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(body.error || `${res.status} ${res.statusText}`);
-    err.status = res.status;
-    err.body = body;
-    throw err;
-  }
-  return body;
-}
-
-function esc(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
-function md(text) {
-  if (!text) return "";
-  // Never let a missing/broken markdown vendor blank the whole review page.
-  if (typeof marked === "undefined") return `<pre class="prose-raw">${esc(text)}</pre>`;
-  try {
-    return marked.parse(text);
-  } catch (e) {
-    return `<pre class="prose-raw">${esc(text)}</pre>`;
-  }
-}
+// (e.g. metrics-agent) still carry their own `by` in the spec files. The server
+// resolves the reviewer (REVIEWER env, else the Tailscale login header).
+function who() { return App.config.reviewer || "reviewer"; }
+const setQ = () => `set=${encodeURIComponent(state.set || "")}`;
 
 /* ---------- sidebar ---------- */
-async function loadSpecs(keepSelection) {
-  const data = await api("/api/specs");
-  state.specs = data.specs;
-  const nav = $("#spec-list");
-  nav.innerHTML = "";
-  for (const s of state.specs) {
+// One spec row (name, segmented meter, stats). The shell renders every set's rows
+// with this; spec mode re-renders its own set after each write.
+function specRowEl(setId, s) {
+  {
     // GEN items have no decide affordance — exclude them from the denominator,
     // otherwise no spec can ever read 100%.
     const denom = s.counts.decidable || s.counts.total || 1;
-    const btn = document.createElement("button");
-    btn.className = "spec-row" + (s.slug === state.slug ? " active" : "");
+    const btn = document.createElement("a");
+    btn.className = "spec-row" + (App.mode === "spec" && setId === state.set && s.slug === state.slug ? " active" : "");
+    btn.href = `#/spec/${encodeURIComponent(setId)}/${encodeURIComponent(s.slug)}`;
     const done = Math.round((s.counts.decided / denom) * 100);
     // Segmented meter: every non-open state gets a colored slice, so the unfilled
     // remainder means exactly "still open". Bar fully colored = Open filter empty.
@@ -76,12 +54,20 @@ async function loadSpecs(keepSelection) {
       <div class="meter" role="img" aria-label="${c.decided} of ${denom} decided, ${openN} open">
         ${seg(c.decided, "m-decided")}${seg(c.needsMetrics, "m-metrics")}${seg(c.team, "m-team")}${seg(c.deferred, "m-deferred")}
       </div>
-      <div class="stats">${c.decided}/${denom} decided · ${done}%${openN ? ` · <b class="open-count">${openN} open</b>` : " · clear"}${c.needsMetrics ? ` · ${c.needsMetrics} metrics` : ""}${s.parseErrors.length ? " · PARSE ERR" : ""}</div>`;
-    btn.onclick = () => selectSpec(s.slug);
-    nav.appendChild(btn);
+      <div class="stats">${c.decided}/${denom} decided · ${done}%${openN ? ` · <b class="open-count">${openN} open</b>` : " · clear"}${c.needsMetrics ? ` · ${c.needsMetrics} metrics` : ""}${(s.parseErrors || []).length ? " · PARSE ERR" : ""}</div>`;
+    return btn;
+  }
+}
+
+async function loadSpecs() {
+  const data = await api(`api/specs?${setQ()}`);
+  state.specs = data.specs;
+  const nav = document.querySelector(`.spec-list[data-set="${CSS.escape(state.set)}"]`);
+  if (nav) {
+    nav.innerHTML = "";
+    for (const s of state.specs) nav.appendChild(specRowEl(state.set, s));
   }
   renderBucketTotals();
-  if (!keepSelection && !state.slug && state.specs.length) selectSpec(state.specs[0].slug);
 }
 
 // Program-wide bucket tally pinned under the spec list — same colors as the meters.
@@ -107,7 +93,7 @@ async function selectSpec(slug) {
   const tok = ++selectToken;
   state.slug = slug;
   state.focusId = null;
-  const data = await api(`/api/spec/${slug}`);
+  const data = await api(`api/spec/${encodeURIComponent(slug)}?${setQ()}`);
   if (tok !== selectToken) return; // a later click won; don't paint stale data
   state.items = data.items;
   state.parseErrors = data.parseErrors || [];
@@ -122,7 +108,7 @@ async function selectSpec(slug) {
     ${list("spec-warnings", "format warnings:", state.warnings)}`;
   renderFilters();
   renderItems();
-  loadSpecs(true);
+  loadSpecs();
   $("#main").scrollTop = 0;
 }
 
@@ -611,14 +597,12 @@ function patchItem(id) {
 
 async function act(id, body) {
   try {
-    const res = await api(`/api/spec/${state.slug}/item/${id}`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-    });
+    const res = await postJSON(`api/spec/${encodeURIComponent(state.slug)}/item/${encodeURIComponent(id)}?${setQ()}`, body);
     const i = state.items.findIndex((it) => it.id === id);
     if (i !== -1) state.items[i] = res.item;
     patchItem(id);
     renderProgress();
-    loadSpecs(true);
+    loadSpecs();
     return true;
   } catch (e) {
     alert(`Write failed: ${e.message}`);
@@ -654,7 +638,7 @@ async function openCode(ev, all) {
     const params = new URLSearchParams({ locator: ev.locator });
     if (ev.lines != null) params.set("lines", String(ev.lines));
     if (all) params.set("all", "1");
-    data = await api(`/api/code?${params}`);
+    data = await api(`api/code?${params}`);
     if (tok !== codeToken) return; // superseded by a newer evidence click
   } catch (e) {
     if (tok !== codeToken) return;
@@ -726,111 +710,91 @@ function moveFocus(delta) {
   els[next].scrollIntoView({ block: "center" });
 }
 
-document.addEventListener("keydown", (e) => {
-  if (e.target.matches("input, textarea")) return;
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
+// The shared keyboard model, spec flavour: j/k move, number keys are the verdict
+// buttons of the focused item (1 Keep, 2 Change, 3 Defer), u undoes its decision,
+// e opens its first citation. The shell owns ⌘K, / and ?.
+App.help.spec = [
+  ["j / k", "next / previous item"],
+  ["1 · 2 · 3", "Keep · Change · Defer the focused item (textarea text rides along)"],
+  ["u", "undo the focused item's decision"],
+  ["e", "open the focused item's first citation"],
+  ["Esc", "close the unify input or the code panel; leave a text box"],
+  ["⌘/Ctrl+Enter", "add the textarea's note without deciding"],
+];
+const SPEC_VERDICT_KEYS = { 1: "keep", 2: "change", 3: "defer" };
+App.keyHandlers.spec = (e) => {
   if (e.key === "Escape") {
     const open = document.querySelector("#items .item .unify-row:not([hidden])");
-    if (open) { open.closest(".item").__closeUnify?.(); return; }
+    if (open) { open.closest(".item").__closeUnify?.(); return true; }
     closeCode();
-    return;
+    return true;
   }
-  if (e.key === "j") { e.preventDefault(); moveFocus(1); }
-  else if (e.key === "k") { e.preventDefault(); moveFocus(-1); }
-  else if (e.key === "e") {
-    const el = document.querySelector("#items .item.focused") || document.querySelector("#items .item");
+  const focused = document.querySelector("#items .item.focused");
+  if (e.key === "j") { moveFocus(1); return true; }
+  if (e.key === "k") { moveFocus(-1); return true; }
+  if (e.key === "e") {
+    const el = focused || document.querySelector("#items .item");
     // Evidence rows the prose already cites are suppressed, so "e" has to be willing
     // to open the first inline prose locator too.
     el?.querySelector(".prose .loc-link, .ev")?.click();
+    return true;
   }
-});
+  if (SPEC_VERDICT_KEYS[e.key] && focused) {
+    focused.querySelector(`[data-d="${SPEC_VERDICT_KEYS[e.key]}"]`)?.click();
+    return true;
+  }
+  if (e.key === "u" && focused) {
+    const und = focused.querySelector("[data-undecide]");
+    if (und) und.click(); else toast("Nothing to undo on this item");
+    return true;
+  }
+  return false;
+};
 
-/* ---------- boot ---------- */
+/* ---------- mount ---------- */
 $("#code-close").addEventListener("click", closeCode);
 window.addEventListener("beforeunload", (e) => {
   if (Object.keys(state.drafts).some((k) => state.drafts[k].trim())) { e.preventDefault(); e.returnValue = ""; }
 });
 
-// Config first: the locator patterns and the sidebar subtitle both depend on it,
-// and a spec painted with the wrong scheme would show unclickable citations.
-(async () => {
-  try {
-    const cfg = await api("/api/config");
-    state.config = { ...state.config, ...cfg };
-  } catch { /* fall back to defaults */ }
-  buildLocatorPatterns(state.config.locatorScheme || "repo");
-  const sub = $("#project-name");
-  if (sub) {
-    sub.textContent = state.config.projectName || "";
-    sub.hidden = !state.config.projectName;
-  }
-  await loadSpecs();
-})().catch((e) => {
-  $("#spec-header").innerHTML = `<div class="parse-errors">could not load specs: ${esc(e.message)}</div>`;
-});
+const Spec = {
+  // Called by the shell's router for #/spec/<set>[/<slug>].
+  async open(setId, slug) {
+    const changedSet = state.set !== setId;
+    state.set = setId;
+    if (changedSet || !state.specs.length) {
+      state.slug = null;
+      await loadSpecs();
+    }
+    const target = slug || state.slug || state.specs[0]?.slug;
+    if (!target) {
+      $("#spec-header").innerHTML = `<div class="empty">No specs in this set.</div>`;
+      $("#items").innerHTML = ""; $("#filters").innerHTML = ""; $("#progress").innerHTML = "";
+      return;
+    }
+    if (target !== state.slug || changedSet) await selectSpec(target);
+    else loadSpecs();
+  },
+  close() { closeCode(); },
+  // Search jump: the target may be hidden by the current filters — widen to All so
+  // the jump always lands, then flash the card so the eye finds it.
+  async jumpTo(setId, slug, id) {
+    location.hash = `#/spec/${encodeURIComponent(setId)}/${encodeURIComponent(slug)}`;
+    await Spec.open(setId, slug);
+    state.status = "all"; state.kind = "all";
+    renderFilters(); renderItems();
+    const el = document.querySelector(`#items .item[data-id="${CSS.escape(id)}"]`);
+    if (el) {
+      el.scrollIntoView({ block: "start" });
+      setFocus(id);
+      el.classList.add("flash");
+      setTimeout(() => el.classList.remove("flash"), 1800);
+    }
+  },
+  verdictLabel(d) { return VERDICT_LABEL[d] || d; },
+  rowEl: specRowEl,
+  buildLocatorPatterns,
+};
 
-
-/* ---------- global search: command-palette modal (⌘K / "/") ---------- */
-const searchModal = $("#search-modal");
-const searchInput = $("#search-input");
-const searchResults = $("#search-results");
-let searchTimer = null, searchSeq = 0;
-
-function openSearch() {
-  searchModal.hidden = false;
-  searchInput.focus();
-  searchInput.select();
-  if (searchInput.value.trim().length >= 2) runSearch();
-}
-function closeSearch() {
-  searchModal.hidden = true;
-  searchInput.blur();
-}
-
-async function jumpToItem(slug, id) {
-  closeSearch();
-  if (state.slug !== slug) await selectSpec(slug);
-  // The target may be hidden by the current filters — widen to All so the jump
-  // always lands, then flash the card so the eye finds it.
-  state.status = "all"; state.kind = "all";
-  renderFilters(); renderItems();
-  const el = document.querySelector(`#items .item[data-id="${CSS.escape(id)}"]`);
-  if (el) {
-    el.scrollIntoView({ block: "start" });
-    setFocus(id);
-    el.classList.add("flash");
-    setTimeout(() => el.classList.remove("flash"), 1800);
-  }
-}
-
-async function runSearch() {
-  const q = searchInput.value.trim();
-  if (q.length < 2) { searchResults.innerHTML = `<div class="sr-empty">type to search all specs</div>`; return; }
-  const seq = ++searchSeq;
-  const data = await api(`/api/search?q=${encodeURIComponent(q)}`);
-  if (seq !== searchSeq || !data) return;
-  const rs = data.results || [];
-  searchResults.innerHTML = rs.length ? rs.map((r) => `
-    <button class="sr" data-slug="${r.slug}" data-id="${r.id}" type="button">
-      <div class="sr-top"><span class="sr-id">${esc(r.id)}</span><span class="sr-title">${esc(r.title)}</span>
-      <span class="sr-meta">${esc(r.slug)} · ${esc(r.decision ? (VERDICT_LABEL[r.decision] || r.decision) : r.status)}</span></div>
-      <span class="sr-snip">${esc(r.snippet)}</span>
-    </button>`).join("") : `<div class="sr-empty">no matches</div>`;
-  for (const b of searchResults.querySelectorAll(".sr"))
-    b.addEventListener("click", () => jumpToItem(b.dataset.slug, b.dataset.id));
-}
-
-if (searchModal) {
-  $("#search-trigger").addEventListener("click", openSearch);
-  searchModal.querySelector(".sm-backdrop").addEventListener("click", closeSearch);
-  searchInput.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 180); });
-  searchInput.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { e.preventDefault(); closeSearch(); }
-    else if (e.key === "Enter") { const first = searchResults.querySelector(".sr"); if (first) first.click(); }
-  });
-  document.addEventListener("keydown", (e) => {
-    const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "");
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openSearch(); }
-    else if (e.key === "/" && !typing && searchModal.hidden) { e.preventDefault(); openSearch(); }
-  });
-}
+window.Spec = Spec;
+})();

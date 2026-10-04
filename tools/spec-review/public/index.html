@@ -3,30 +3,40 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Spec Review Bench — decision-mill</title>
+<title>Decision Mill</title>
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body data-mode="home">
 <div id="app">
   <aside id="sidebar">
     <header id="brand">
-      <h1>SPEC&nbsp;REVIEW</h1>
+      <a href="#/" class="brand-link"><h1>DECISION&nbsp;MILL</h1></a>
       <div class="sub" id="project-name" hidden></div>
+      <button id="menu-toggle" type="button" aria-label="Menu">☰</button>
     </header>
     <div id="global-search">
       <button id="search-trigger" type="button" aria-label="Global search"><span>search everything…</span><kbd>⌘K</kbd></button>
     </div>
-    <nav id="spec-list" aria-label="Specs"></nav>
-    <div id="bucket-totals" aria-label="Totals across all specs"></div>
+    <nav id="nav" aria-label="Spec sets and label tasks"></nav>
+    <div id="bucket-totals" aria-label="Totals across all specs" hidden></div>
+    <footer id="side-foot">
+      <span id="whoami" title="labels and notes are attributed to this reviewer"></span>
+      <button id="help-trigger" type="button" title="Keyboard shortcuts (?)">?</button>
+      <button id="theme-toggle" type="button">◐</button>
+    </footer>
   </aside>
 
   <main id="main">
-    <div id="spec-header"></div>
-    <div id="toolbar">
-      <div id="filters" aria-label="Filters"></div>
-      <div id="progress"></div>
-    </div>
-    <div id="items"></div>
+    <section id="home-view"></section>
+    <section id="spec-view" hidden>
+      <div id="spec-header"></div>
+      <div id="toolbar">
+        <div id="filters" aria-label="Filters"></div>
+        <div id="progress"></div>
+      </div>
+      <div id="items"></div>
+    </section>
+    <section id="label-view" hidden></section>
   </main>
 
   <aside id="code-panel" hidden>
@@ -40,12 +50,20 @@
 <div id="search-modal" hidden>
   <div class="sm-backdrop"></div>
   <div class="sm-panel" role="dialog" aria-label="Global search">
-    <input id="search-input" type="search" placeholder="search all specs — ids, titles, prose, decisions, notes…" spellcheck="false" autocomplete="off">
+    <input id="search-input" type="search" placeholder="search specs and label items — ids, titles, prose, transcripts, notes…" spellcheck="false" autocomplete="off">
     <div id="search-results"></div>
     <div class="sm-hint">↵ open top result · esc close</div>
   </div>
 </div>
-<script src="/vendor/marked.js"></script>
-<script src="app.js"></script>
+<div id="help-modal" hidden>
+  <div class="sm-backdrop"></div>
+  <div class="sm-panel help-panel" role="dialog" aria-label="Keyboard shortcuts"><div id="help-body"></div><div class="sm-hint">? or esc to close</div></div>
+</div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script src="vendor/marked.js"></script>
+<script src="common.js"></script>
+<script src="spec.js"></script>
+<script src="label.js"></script>
+<script src="shell.js"></script>
 </body>
 </html>
