@@ -1,12 +1,15 @@
 #!/usr/bin/env node
-// CLI: validate all spec files against FORMAT.md v1. Exit 1 on any error.
+// CLI: validate all spec files against FORMAT.md v1, and every label task against
+// LABELS.md v1. Exit 1 on any error.
 // Warnings (vocabulary/consistency drift) are printed but do not fail the run.
 // With --locators, also checks every evidence locator against the configured code
 // checkout (REPO_ROOT); those count as errors.
 import fs from "node:fs";
 import path from "node:path";
 import { validateSpecText, checkLocators } from "./lib/parser.js";
-import { SPECS_DIR, REPO_ROOT, EXCLUDED, LOCATOR_PREFIX, DELEGATED_PATHS } from "./lib/config.js";
+import { SPECS_DIRS, LABELS_ROOTS, REPO_ROOT, EXCLUDED, LOCATOR_PREFIX, DELEGATED_PATHS } from "./lib/config.js";
+import { discoverTasks, loadTask } from "./lib/task.js";
+import { readTaskLabels } from "./lib/labelstore.js";
 
 const CHECK_LOCATORS = process.argv.includes("--locators");
 // --strict: treat vocabulary/consistency warnings as failures (CI / pre-review gate,
@@ -24,9 +27,13 @@ const existsInRepo = (rel) => {
 
 let failed = false;
 let warnCount = 0;
-for (const f of fs.readdirSync(SPECS_DIR).filter((f) => f.endsWith(".md") && !EXCLUDED.has(f)).sort()) {
+const specFiles = SPECS_DIRS.flatMap((dir) => {
+  if (!fs.existsSync(dir)) { console.log(`FAIL specs dir not found: ${dir}`); failed = true; return []; }
+  return fs.readdirSync(dir).filter((f) => f.endsWith(".md") && !EXCLUDED.has(f)).sort().map((f) => ({ dir, f }));
+});
+for (const { dir, f } of specFiles) {
   const slug = f.replace(/\.md$/, "");
-  const { items, errors, warnings } = validateSpecText(fs.readFileSync(path.join(SPECS_DIR, f), "utf8"), slug);
+  const { items, errors, warnings } = validateSpecText(fs.readFileSync(path.join(dir, f), "utf8"), slug);
   const errs = [...errors];
   if (CHECK_LOCATORS) errs.push(...checkLocators(items, existsInRepo));
   // A bare `change` is unreadable once the spec is disposed of and only the
@@ -67,6 +74,22 @@ for (const f of fs.readdirSync(SPECS_DIR).filter((f) => f.endsWith(".md") && !EX
   }
   for (const w of warnings) { warnCount++; console.log(`  warn ${slug}: ${w}`); }
 }
+// Label tasks: structure only (task.yaml, items.jsonl, label rows that parse).
+for (const t of discoverTasks(LABELS_ROOTS)) {
+  const { items, errors, warnings } = loadTask(t.dir, t.id);
+  const labels = readTaskLabels(t.dir);
+  const bad = Object.entries(labels.reviewers).filter(([, r]) => r.bad).map(([n, r]) => `labels/${n}.jsonl: ${r.bad} unparseable row(s) (skipped)`);
+  if (errors.length) {
+    failed = true;
+    console.log(`FAIL task ${t.id}`);
+    for (const e of errors) console.log(`  - ${e}`);
+  } else {
+    const labeled = Object.values(labels.reviewers).reduce((a, r) => a + [...r.states.values()].filter((s) => s.label != null).length, 0);
+    console.log(`ok   task ${t.id}  (${items.length} items, ${labeled} reviewer labels)`);
+  }
+  for (const w of [...warnings, ...bad]) { warnCount++; console.log(`  warn task ${t.id}: ${w}`); }
+}
+
 if (warnCount) {
   console.log(`\n${warnCount} warning(s)${STRICT ? " — failing under --strict." : " — format drift, not blocking (pass --strict to fail)."}`);
   if (STRICT) failed = true;

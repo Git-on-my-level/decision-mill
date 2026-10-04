@@ -1,6 +1,11 @@
-// Spec review server — local-only human UI over the machine-parsable specs.
-// The spec markdown files remain the single source of truth; every write here
-// mutates only adjudication YAML blocks via lib/parser.js.
+// decision-mill server — one local UI over two kinds of file-backed work:
+//  * spec mode: the machine-parsable specs. The spec markdown files remain the
+//    single source of truth; every write here mutates only adjudication YAML
+//    blocks via lib/parser.js.
+//  * label mode: label tasks (LABELS.md). Every write appends one row to
+//    labels/<reviewer>.jsonl via lib/labelstore.js; nothing is ever rewritten.
+// Binds to loopback by default. All client URLs are relative, so it works behind
+// a reverse proxy mounted at "/" (e.g. `tailscale serve`).
 
 import http from "node:http";
 import fs from "node:fs";
@@ -8,7 +13,9 @@ import path from "node:path";
 import url from "node:url";
 import { execFileSync } from "node:child_process";
 import { parseSpec, updateItem, validateSpecText, isValidDecision, canonicalDecision, LINES_RE, dumpMeta } from "./lib/parser.js";
-import { SPECS_DIR, REPO_ROOT, PORT, EXCLUDED, LOCATOR_PREFIX, LOCATOR_SCHEME, PROJECT_NAME, REVIEWER } from "./lib/config.js";
+import { SPECS_DIRS, LABELS_ROOTS, REPO_ROOT, PORT, HOST, EXCLUDED, LOCATOR_PREFIX, LOCATOR_SCHEME, PROJECT_NAME, REVIEWER, REVIEWER_EXPLICIT } from "./lib/config.js";
+import { handleLabelApi, searchTasks, taskSummaries } from "./lib/label-api.js";
+import { discoverTasks } from "./lib/task.js";
 
 const HERE = path.dirname(url.fileURLToPath(import.meta.url));
 
@@ -28,15 +35,39 @@ const pad2 = (n) => String(n).padStart(2, "0");
 const localDate = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const localStamp = (d) => `${localDate(d)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 
-function specFiles() {
-  return fs.readdirSync(SPECS_DIR)
+// Spec sets: every configured specs directory, each with a stable URL id. The
+// first is the default for set-less calls, so the original single-set API (and
+// PLAYBOOK's curl examples) keep working unchanged.
+const slugifyId = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "specs";
+const SPEC_SETS = (() => {
+  const out = [];
+  for (const dir of SPECS_DIRS) {
+    const name = `${path.basename(path.dirname(dir))}/${path.basename(dir)}`;
+    let id = slugifyId(name);
+    for (let n = 2; out.some((s) => s.id === id); n++) id = `${slugifyId(name)}-${n}`;
+    out.push({ id, dir, name });
+  }
+  return out;
+})();
+const availableSets = () => SPEC_SETS.filter((s) => fs.existsSync(s.dir) && fs.statSync(s.dir).isDirectory());
+
+function setFor(u) {
+  const want = u.searchParams.get("set");
+  const sets = availableSets();
+  const set = want ? sets.find((s) => s.id === want) : sets[0];
+  if (!set) throw new HttpError(404, want ? `unknown spec set '${want}'` : "no spec set configured");
+  return set;
+}
+
+function specFiles(set) {
+  return fs.readdirSync(set.dir)
     .filter((f) => f.endsWith(".md") && !EXCLUDED.has(f))
     .sort();
 }
 
-function specSummary(file) {
+function specSummary(set, file) {
   const slug = file.replace(/\.md$/, "");
-  const text = fs.readFileSync(path.join(SPECS_DIR, file), "utf8");
+  const text = fs.readFileSync(path.join(set.dir, file), "utf8");
   const { frontmatter, items, errors } = parseSpec(text);
   // `decidable` excludes kind: general — GEN items have no decide affordance, so
   // counting them in the denominator made 100% unreachable on every spec. The
@@ -110,9 +141,38 @@ function parseLineRanges(linesParam, totalLines) {
   return { ranges, warning: beyond ? `lines ${linesParam} extend past end of file (${totalLines} lines) — spec may be stale` : undefined };
 }
 
+// Who is writing. An explicit REVIEWER wins (single-person setup); otherwise the
+// Tailscale-User-Login header that `tailscale serve` injects names the person;
+// otherwise the default. tailscale serve strips client-supplied Tailscale-*
+// headers, so the header cannot be forged through the proxy.
+function reviewerFor(req) {
+  if (REVIEWER_EXPLICIT) return REVIEWER;
+  const h = req.headers["tailscale-user-login"];
+  if (h) return String(h).trim().slice(0, 120);
+  return REVIEWER;
+}
+
+// Writes must be same-origin JSON. A JSON content type cannot be sent
+// cross-origin without a CORS preflight this server never answers, which is the
+// real CSRF guard; the Origin comparison is belt-and-braces for browsers that
+// send it. Behind a proxy the Host may be rewritten, so X-Forwarded-Host counts,
+// and a request carrying the proxy's identity header is trusted as proxied.
+function writeAllowed(req) {
+  const ct = String(req.headers["content-type"] || "");
+  if (!/^application\/json\b/i.test(ct)) return "writes must be application/json";
+  const origin = req.headers.origin;
+  if (!origin) return null; // curl, agents, same-origin GET-initiated fetches
+  let oh;
+  try { oh = new URL(origin).host; } catch { return "bad Origin header"; }
+  const hosts = [req.headers.host, req.headers["x-forwarded-host"]].filter(Boolean)
+    .flatMap((h) => String(h).split(",")).map((h) => h.trim());
+  if (hosts.includes(oh) || req.headers["tailscale-user-login"]) return null;
+  return `cross-origin write refused (Origin ${oh})`;
+}
+
 function json(res, code, obj) {
   const body = JSON.stringify(obj);
-  res.writeHead(code, { "content-type": "application/json", "content-length": Buffer.byteLength(body) });
+  res.writeHead(code, { "content-type": "application/json", "content-length": Buffer.byteLength(body), "cache-control": "no-store" });
   res.end(body);
 }
 
@@ -125,13 +185,13 @@ function readBody(req) {
   });
 }
 
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
+const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml" };
 
 function serveStatic(res, filePath) {
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
     res.writeHead(404); res.end("not found"); return;
   }
-  res.writeHead(200, { "content-type": MIME[path.extname(filePath)] || "application/octet-stream" });
+  res.writeHead(200, { "content-type": MIME[path.extname(filePath)] || "application/octet-stream", "cache-control": "no-cache" });
   fs.createReadStream(filePath).pipe(res);
 }
 
@@ -139,8 +199,35 @@ const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, `http://localhost:${PORT}`);
   const p = u.pathname;
   try {
+    if (req.method === "POST") {
+      const refused = writeAllowed(req);
+      if (refused) return json(res, 403, { error: refused });
+    }
+
+    if (p.startsWith("/api/task")) {
+      const handled = await handleLabelApi(req, res, u, { roots: LABELS_ROOTS, reviewer: reviewerFor(req), readBody, json, HttpError });
+      if (handled !== false) return;
+    }
+
+    if (p === "/api/home" && req.method === "GET") {
+      // Everything the home screen shows: each spec set with its specs' tallies,
+      // and each label task with this reviewer's progress.
+      const sets = availableSets().map((set) => {
+        const specs = specFiles(set).map((f) => specSummary(set, f));
+        const sum = (k) => specs.reduce((a, s) => a + (s.counts[k] || 0), 0);
+        return { id: set.id, name: set.name, dir: set.dir, specs: specs.map((s) => ({ slug: s.slug, title: s.title, counts: s.counts })),
+          counts: { decidable: sum("decidable"), decided: sum("decided"), open: sum("open") } };
+      });
+      return json(res, 200, { specSets: sets, tasks: taskSummaries(LABELS_ROOTS, reviewerFor(req)), reviewer: reviewerFor(req) });
+    }
+
+    if (p === "/api/specsets" && req.method === "GET") {
+      return json(res, 200, { sets: availableSets().map((s) => ({ id: s.id, name: s.name, dir: s.dir })) });
+    }
+
     if (p === "/api/specs" && req.method === "GET") {
-      return json(res, 200, { specsDir: SPECS_DIR, repoRoot: REPO_ROOT, specs: specFiles().map(specSummary) });
+      const set = setFor(u);
+      return json(res, 200, { set: set.id, specsDir: set.dir, repoRoot: REPO_ROOT, specs: specFiles(set).map((f) => specSummary(set, f)) });
     }
 
     if (p === "/api/search" && req.method === "GET") {
@@ -150,9 +237,9 @@ const server = http.createServer(async (req, res) => {
       if (q.length < 2) return json(res, 200, { results: [] });
       const terms = q.split(/\s+/).filter(Boolean);
       const results = [];
-      outer: for (const file of specFiles()) {
+      outer: for (const set of availableSets()) for (const file of specFiles(set)) {
         const slug = file.replace(/\.md$/, "");
-        const { items } = parseSpec(fs.readFileSync(path.join(SPECS_DIR, file), "utf8"));
+        const { items } = parseSpec(fs.readFileSync(path.join(set.dir, file), "utf8"));
         for (const it of items) {
           const hay = [it.id, it.title, it.meta.explanation, it.meta.decision_detail, it.prose,
             ...((it.meta.notes || []).map((n) => n && n.text))].filter(Boolean).join("\n");
@@ -160,12 +247,14 @@ const server = http.createServer(async (req, res) => {
           if (!terms.every((term) => low.includes(term))) continue;
           const idx = low.indexOf(terms[0]);
           const start = Math.max(0, idx - 40);
-          results.push({ slug, id: it.id, title: it.title, kind: it.kind,
+          results.push({ type: "spec", set: set.id, slug, id: it.id, title: it.title, kind: it.kind,
             status: it.meta.status || "open", decision: it.meta.decision,
             snippet: (start > 0 ? "…" : "") + hay.slice(start, idx + 130).replace(/\s+/g, " ") + "…" });
           if (results.length >= 30) break outer;
         }
       }
+      // Label items too (title, summary, visible content — never hidden fields).
+      for (const r of searchTasks(LABELS_ROOTS, terms, 30 - Math.min(30, results.length))) results.push(r);
       return json(res, 200, { results });
     }
 
@@ -173,27 +262,30 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/config" && req.method === "GET") {
       return json(res, 200, {
         locatorScheme: LOCATOR_SCHEME, locatorPrefix: LOCATOR_PREFIX,
-        projectName: PROJECT_NAME, reviewer: REVIEWER,
+        projectName: PROJECT_NAME, reviewer: reviewerFor(req),
         repoRootPresent: fs.existsSync(REPO_ROOT),
+        specSets: availableSets().map((s) => ({ id: s.id, name: s.name })),
       });
     }
 
     let m;
     if ((m = p.match(/^\/api\/spec\/([a-z0-9-]+)$/)) && req.method === "GET") {
+      const set = setFor(u);
       const file = `${m[1]}.md`;
-      if (!specFiles().includes(file)) return json(res, 404, { error: "unknown spec" });
-      const text = fs.readFileSync(path.join(SPECS_DIR, file), "utf8");
+      if (!specFiles(set).includes(file)) return json(res, 404, { error: "unknown spec" });
+      const text = fs.readFileSync(path.join(set.dir, file), "utf8");
       const { frontmatter, items, errors, warnings } = validateSpecText(text, m[1]);
-      return json(res, 200, { slug: m[1], frontmatter, raw: text, parseErrors: errors, warnings,
+      return json(res, 200, { set: set.id, slug: m[1], frontmatter, raw: text, parseErrors: errors, warnings,
         items: items.map((it) => ({ id: it.id, title: it.title, kind: it.kind, meta: it.meta, prose: it.prose })) });
     }
 
     if ((m = p.match(/^\/api\/spec\/([a-z0-9-]+)\/item\/([A-Z0-9-]+)$/)) && req.method === "POST") {
       const [, slug, id] = m;
-      const file = path.join(SPECS_DIR, `${slug}.md`);
-      if (!fs.existsSync(file)) return json(res, 404, { error: "unknown spec" });
+      const set = setFor(u);
+      if (!specFiles(set).includes(`${slug}.md`)) return json(res, 404, { error: "unknown spec" });
+      const file = path.join(set.dir, `${slug}.md`);
       const body = await readBody(req);
-      const by = String(body.by || REVIEWER).slice(0, 64);
+      const by = String(body.by || reviewerFor(req)).slice(0, 64);
       const now = new Date();
       const stamp = localStamp(now);
       const text = fs.readFileSync(file, "utf8");
@@ -350,10 +442,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/api/validate" && req.method === "GET") {
-      const results = specFiles().map((f) => {
+      const set = setFor(u);
+      const results = specFiles(set).map((f) => {
         const slug = f.replace(/\.md$/, "");
-        const { errors, warnings } = validateSpecText(fs.readFileSync(path.join(SPECS_DIR, f), "utf8"), slug);
-        return { slug, errors, warnings };
+        const { errors, warnings } = validateSpecText(fs.readFileSync(path.join(set.dir, f), "utf8"), slug);
+        return { set: set.id, slug, errors, warnings };
       });
       return json(res, 200, { results, ok: results.every((r) => r.errors.length === 0) });
     }
@@ -376,20 +469,28 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-if (!fs.existsSync(SPECS_DIR) || !fs.statSync(SPECS_DIR).isDirectory()) {
-  console.error(`spec-review: SPECS_DIR not found: ${SPECS_DIR}`);
-  console.error(`  set SPECS_DIR=/path/to/specs (or run from tools/spec-review)`);
+for (const s of SPEC_SETS) if (!availableSets().includes(s)) console.error(`decision-mill: specs dir not found, skipping: ${s.dir}`);
+// A missing labels root is a warning, not a stop: tasks are discovered per request,
+// so a dataset being built in parallel shows up on the home screen when it lands.
+for (const r of LABELS_ROOTS) if (!fs.existsSync(r)) console.error(`decision-mill: labels root not found yet (tasks appear once it exists): ${r}`);
+if (!availableSets().length && !LABELS_ROOTS.length) {
+  console.error("decision-mill: nothing to serve.");
+  console.error("  spec mode:  SPECS_DIR=/path/to/specs node server.js   (or --specs DIR)");
+  console.error("  label mode: LABELS_ROOT=~/.local/share/labels node server.js   (or --labels DIR)");
   process.exit(2);
 }
 
 server.on("error", (e) => {
-  if (e.code === "EADDRINUSE") console.error(`spec-review: port ${PORT} already in use — set PORT=<other>`);
-  else console.error("spec-review:", e.message);
+  if (e.code === "EADDRINUSE") console.error(`decision-mill: port ${PORT} already in use — set PORT=<other>`);
+  else console.error("decision-mill:", e.message);
   process.exit(2);
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`spec-review: http://127.0.0.1:${PORT}`);
-  console.log(`  specs: ${SPECS_DIR}`);
-  console.log(`  code checkout (${LOCATOR_PREFIX}): ${REPO_ROOT}${fs.existsSync(REPO_ROOT) ? "" : "  (MISSING — set REPO_ROOT env)"}`);
+server.listen(PORT, HOST, () => {
+  const shown = HOST.includes(":") ? `[${HOST}]` : HOST;
+  console.log(`decision-mill: http://${shown}:${PORT}`);
+  for (const s of availableSets()) console.log(`  specs [${s.id}]: ${s.dir}`);
+  if (availableSets().length) console.log(`  code checkout (${LOCATOR_PREFIX}): ${REPO_ROOT}${fs.existsSync(REPO_ROOT) ? "" : "  (MISSING — set REPO_ROOT env)"}`);
+  for (const r of LABELS_ROOTS) console.log(`  labels root: ${r}  (${discoverTasks([r]).length} task(s))`);
+  console.log(`  reviewer: ${REVIEWER_EXPLICIT ? REVIEWER : `Tailscale-User-Login header, else "${REVIEWER}"`}`);
 });
