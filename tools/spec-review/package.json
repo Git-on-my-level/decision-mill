@@ -7,12 +7,14 @@
     "validate": "node validate.js",
     "lint": "node validate.js",
     "lint:strict": "node validate.js --strict",
-    "lint:locators": "node validate.js --locators"
+    "lint:locators": "node validate.js --locators",
+    "test": "node --test \"test/*.test.js\"",
+    "labels": "node labels.js"
   },
   "dependencies": {
     "js-yaml": "^4.1.0",
     "marked": "^16.0.0"
   },
-  "description": "Local review UI and format linter for decision-mill capability specs.",
+  "description": "decision-mill: one local UI for spec adjudication and human labeling, plus the format linter.",
   "license": "MIT"
 }
