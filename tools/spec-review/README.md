@@ -1,12 +1,19 @@
-# spec-review
+# spec-review — the decision-mill UI
 
-Local web UI for walking through capability specs, viewing the cited code, and
-recording decisions and notes. The spec markdown files remain the single source of
-truth (see [`FORMAT.md`](../../FORMAT.md)): every action here writes back into their
-`adjudication` YAML blocks, so coding agents read the specs directly and never need
-this tool.
+One local web UI with two modes over plain files:
 
-Two dependencies (`js-yaml`, `marked`), no build step, binds to `127.0.0.1` only.
+- **Spec mode**: walk through capability specs, view the cited code, record
+  decisions and notes. The spec markdown files remain the single source of truth
+  (see [`FORMAT.md`](../../FORMAT.md)): every action writes back into their
+  `adjudication` YAML blocks, so coding agents read the specs directly and never need
+  this tool.
+- **Label mode**: label items from a task directory, blind, in stratified rounds,
+  and compare models and model stand-ins against the human (see
+  [`LABELS.md`](../../LABELS.md)). Every action appends one row to
+  `labels/<reviewer>.jsonl`.
+
+Two dependencies (`js-yaml`, `marked`), no build step, binds to `127.0.0.1` by
+default.
 
 ## Run
 
@@ -16,25 +23,43 @@ node server.js    # bun server.js also works
 # → http://127.0.0.1:4599
 ```
 
-With no configuration it serves the repository's `specs/` directory, falling back to
-the bundled `examples/specs/`.
+With no configuration it serves the repository's `specs/` directory (falling back to
+the bundled `examples/specs/`) and the bundled `examples/labels/` demo task.
+
+```sh
+node server.js --labels ~/.local/share/labels --port 4610          # label mode only
+SPECS_DIR=/path/a/specs,/path/b/specs PORT=4601 node server.js     # two spec sets
+```
 
 ### Configuration (all optional)
 
-| Variable | Default | Meaning |
-| -------- | ------- | ------- |
-| `PORT` | `4599` | Bind port. Pick a different one per program to run two UIs at once. |
-| `SPECS_DIR` | `<repo>/specs`, else `<repo>/examples/specs` | Where spec files live. |
-| `LOCATOR_PREFIX` | `repo` | Evidence-locator scheme (`repo:src/foo.ts`). |
-| `REPO_ROOT` | the repo containing this tool | Checkout that locators resolve against. |
-| `PROJECT_NAME` | *(empty)* | Sidebar subtitle. |
-| `REVIEWER` | `reviewer` | Attribution in `notes[].by`. |
-| `SPECS_EXCLUDE` | `README.md,FORMAT.md` | Files in `SPECS_DIR` that are docs, not specs. |
-| `DELEGATED_PATHS` | *(empty)* | Path prefixes owned by another team; see `validate.js`. |
+| Variable | Flag | Default | Meaning |
+| -------- | ---- | ------- | ------- |
+| `PORT` | `--port` | `4599` | Bind port. Pick a different one per program to run two UIs at once. |
+| `HOST` | `--host` | `127.0.0.1` | Bind address. To reach it from another machine, prefer `tailscale serve --bg --https=<port> http://127.0.0.1:<port>`. |
+| `SPECS_DIR` | `--specs` | `<repo>/specs`, else `<repo>/examples/specs` | Spec directories (comma-separated, or repeat the flag). Each is a spec set on the home screen. |
+| `LABELS_ROOT` | `--labels` | `<repo>/examples/labels` if nothing else is configured | Label-task roots (comma-separated, or repeat the flag). |
+| `LOCATOR_PREFIX` | | `repo` | Evidence-locator scheme (`repo:src/foo.ts`). |
+| `REPO_ROOT` | | the repo containing this tool | Checkout that locators resolve against. |
+| `PROJECT_NAME` | | *(empty)* | Sidebar subtitle. |
+| `REVIEWER` | `--reviewer` | `reviewer` | Attribution in spec `notes[].by` and the label file name. Unset: the `Tailscale-User-Login` header names the reviewer. |
+| `SPECS_EXCLUDE` | | `README.md,FORMAT.md` | Files in `SPECS_DIR` that are docs, not specs. |
+| `DELEGATED_PATHS` | | *(empty)* | Path prefixes owned by another team; see `validate.js`. |
 
 All of them are read and normalized in one place, [`lib/config.js`](lib/config.js).
 
-## Use
+## The shell
+
+- **Home** lists every spec set and label task with its progress; with exactly one
+  thing configured it opens that directly.
+- **Shared keys**: `j`/`k` move, number keys are verdicts, `u` undoes, `⌘K` (or `/`)
+  searches every spec and label item, `?` shows the keys for the current mode, `Esc`
+  closes a panel or leaves a text box. The theme follows the system; the footer
+  toggle overrides it per browser.
+- Routes are hash-based and every URL is relative, so the UI works behind a reverse
+  proxy mounted at `/`. Writes must be same-origin `application/json`.
+
+## Spec mode
 
 - **Left**: specs with a progress meter that means exactly one thing — decided over
   decidable (both exclude the one `GEN` item per spec, which has no decision). A spec
@@ -44,6 +69,7 @@ All of them are read and normalized in one place, [`lib/config.js`](lib/config.j
   independently by kind. Deferred and team-parked items are excluded from Open, so
   Open holds only what still awaits a first pass. `j`/`k` moves focus, `e` opens the
   focused item's first citation, `Esc` closes the unify input or the code panel,
+  `1`/`2`/`3` are Keep/Change/Defer on the focused item and `u` undoes its decision,
   `⌘K` (or `/`) opens search across every spec — ids, titles, prose, decisions, notes.
 - An item's optional `explanation` renders as plain-English body text under the title.
 - **Click any locator** to open the code panel at the cited lines. Inline citations in
@@ -74,6 +100,42 @@ All of them are read and normalized in one place, [`lib/config.js`](lib/config.j
   parse and render, and the server normalizes `toss`/`accept` to `change`/`keep` on
   write, but the UI no longer offers them.
 
+## Label mode
+
+- **Label** tab: one card at a time. The card shows the whole item (transcript with
+  speakers, your own lines styled as yours, timestamps), an audio player when the
+  item has media (timestamps seek it), the model-written summary collapsed with a
+  caveat, and the neighboring items, each expandable — so nobody judges a snippet.
+- Press a label's key (shown on the button) and the label saves and the next
+  unlabeled card appears. Checkbox fields toggle with their key; `n` focuses the note
+  (it rides along with the next label, or Enter saves it on a labeled card). `u` undoes
+  the last label and returns to that card. Unsure is always offered.
+- **Rounds**: a bar shows the round, one dot per card (colored by your label), cards
+  left and a pace estimate. Finishing a round shows a round-done screen with the
+  usefulness headline; Enter starts the next one. Rounds are deterministic, so
+  closing the browser or restarting the server resumes where you were.
+- **Blind**: while a task is blind the server withholds each item's model answers and
+  stratum until you have labeled it; afterwards they appear collapsed under the card.
+- **Items** tab: every item by round, filterable (unlabeled, labeled, unsure, with a
+  note); click or Enter opens one.
+- **Results** tab: *Is my labeling useful?* first — disagreements found, each model's
+  agreement with a 95% interval and how many more labels would tighten it — then each
+  model against you with confusion counts, stand-ins against you, a threshold curve
+  for scored models (your positive rate per score bin, agreement at each threshold,
+  the lowest threshold that flags nothing you labeled otherwise), per-stratum
+  agreement, and the disagreeing items. A toggle fills unlabeled items with stand-in
+  labels. `Shift+L`/`Shift+I`/`Shift+R` switch tabs.
+
+### Labels CLI
+
+```sh
+node labels.js tasks                          # tasks under LABELS_ROOT
+node labels.js stats <task-dir|id> [--reviewer R] [--fill] [--json]
+node labels.js export <task-dir|id> [--reviewer R] [--source human|model-standin] [--format jsonl|csv]
+```
+
+Reads the files directly; prints the same numbers as Results (`lib/results.js`).
+
 ## Validate
 
 ```sh
@@ -82,15 +144,29 @@ node validate.js --locators   # additionally check every locator against REPO_RO
 node validate.js --strict     # warnings become failures — the gate before deleting a spec
 ```
 
-Errors fail the run; warnings (vocabulary drift such as `confidence: medium`,
+It also checks every label task under the configured roots (task.yaml, items.jsonl,
+label rows). Errors fail the run; warnings (vocabulary drift such as `confidence: medium`,
 un-padded ids, unparseable `lines`, a `change` with no prefixed detail, a legacy
 `toss`/`accept` stored value) are printed but
 do not, unless `--strict`. The UI shows the same warnings in the spec header.
 
+## Tests
+
+```sh
+npm test          # node --test: label store, rounds, results math, task format,
+                  # and an HTTP suite against a real server on temp copies
+                  # (spec writes stay surgical, blind enforcement, concurrency)
+```
+
 ## Agent-facing writes
 
-Two actions exist for agents rather than humans, so concurrent writers go through this
-server's serialized queue instead of racing on the raw files:
+Label mode: model stand-in labels go to `POST /api/task/<id>/labels`
+(`{"reviewer": "opus-standin", "labels": [...]}`, always `source: model-standin`),
+through the same per-file queue as the reviewer's clicks. See
+[`LABELS.md`](../../LABELS.md) for every endpoint.
+
+Spec mode: two actions exist for agents rather than humans, so concurrent writers go
+through this server's serialized queue instead of racing on the raw files:
 
 - `{"action":"metrics","metrics":{…}}` — set or clear an item's metrics block.
 - `{"action":"append-item","id":…,"title":…,"meta":{…},"prose":…}` — create a new
@@ -108,3 +184,19 @@ the block you edited.
 
 Anything that breaks this property should be rejected. It is what makes a review
 session produce a readable diff.
+
+Label writes have the matching property: rows are only ever appended, one line per
+write, serialized per file, so a label file is its own audit trail and a crash can
+at worst tear the final line (which readers skip).
+
+## Files
+
+| Path | Role |
+| ---- | ---- |
+| `server.js` | HTTP server, spec routes, static files |
+| `lib/config.js` | every knob, in one place |
+| `lib/parser.js` | spec parsing and surgical updates |
+| `lib/task.js`, `lib/labelstore.js`, `lib/rounds.js`, `lib/results.js` | label format, store, sampler, results math |
+| `lib/label-api.js` | label-mode HTTP routes |
+| `public/common.js`, `shell.js`, `spec.js`, `label.js` | the UI: helpers, shell/router, the two modes |
+| `validate.js`, `labels.js` | linter and labels CLI |
