@@ -1,0 +1,31 @@
+# Fictional demo task — every item, name and recording here is invented.
+# It exists so `node server.js` shows a working label mode on a fresh clone.
+id: demo-task
+title: Keep or noise — fictional voice notes
+question: Would you want this conversation kept in your notes?
+instructions: |
+  **Keep** anything you would want to find again: a plan, a time, a name, a number,
+  a task, a fact about you or someone you know.
+  **Noise** is anything you would never look at again: background TV, small talk,
+  half-heard fragments with no content.
+  Use **Unsure** when the transcript does not give you enough to decide — that is
+  data too, and it is better than a guess.
+
+  Model answers stay hidden until you label a card.
+labels:
+  - {id: keep,   label: Keep,   key: "1", tone: positive}
+  - {id: noise,  label: Noise,  key: "2", tone: negative}
+  - {id: unsure, label: Unsure, key: "3"}
+fields:
+  - {id: wants_memory, type: checkbox, label: Should have produced a memory or task, key: m}
+blind: true
+round_size: 6          # tiny, so the demo shows a "round done" screen quickly
+stratify: balanced     # every round spans the score range
+models:
+  - id: ranker
+    score_path: hidden.ranker.p_noise
+    verdict_path: hidden.ranker.verdict
+    threshold: 0.8
+    positive_label: noise   # a high p_noise means "noise"
+  - id: lite
+    verdict_path: hidden.lite.verdict

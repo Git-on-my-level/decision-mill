@@ -33,3 +33,9 @@ logs
 
 # spec-review atomic-write temp files
 *.md.tmp-*
+
+# label rows written while trying the demo task. Real label data never lives in
+# git at all (it belongs under ~/.local/share/labels); only the demo's fictional
+# stand-in file is tracked.
+examples/labels/*/labels/*
+!examples/labels/demo-task/labels/opus-standin.jsonl
