@@ -631,3 +631,4 @@ h3.sec { font-size: 15px; font-weight: 640; margin: 26px 0 8px; }
   .sp-clip-text .sp-time { display: none; }
 }
 @media (hover: none) { .sp kbd { display: none; } }
+.sp-mixed-bar { justify-content: space-between; }

@@ -67,6 +67,12 @@ window.Speakers = (() => {
       remember([r.row]);
       await reload();
       if (scope === "group" && label !== "mixed") { advance(); toast(`${labelText(label)} · u to undo`); }
+      else if (scope === "group") toast("Mixed: label each clip, then Done");
+      else if (scope === "segment") {
+        const it = card(), c = conv();
+        const open = it?.label === "mixed" ? it.content.segments.map((id) => segById(c, id)).filter((s) => s && s.label === "mixed") : null;
+        if (open && !open.length) { advance(); toast("Group done"); }
+      }
       render(); Shell.refreshNav();
     } finally { busy = false; }
   }
@@ -182,7 +188,8 @@ window.Speakers = (() => {
       clipRow(c, s, it.label === "mixed" ? el("div", { class: "sp-seglabel" }, segPicker(s)) : null)));
     const more = all.length > 4 && it.label !== "mixed" ? btn({ class: "sp-link", onclick: () => { showAll = !showAll; render(); } }, showAll ? "Show 4 samples" : `Show all ${all.length} clips`) : null;
     body.append(el("section", { class: "sp-card" }, head,
-      it.label === "mixed" ? el("p", { class: "sp-note" }, "Mixed group: label each clip below, or relabel the whole group.") : null,
+      it.label === "mixed" ? el("div", { class: "sp-row sp-mixed-bar" }, el("p", { class: "sp-note" }, "Mixed group: label each clip below. It moves on by itself once every clip has a label."),
+        btn({ class: "sp-pill primary", onclick: () => { advance(); render(); } }, "Done with this group →")) : null,
       list, more,
       picker(it.id, "group", it.label, sug?.label),
       el("div", { class: "sp-nav" },
@@ -200,7 +207,7 @@ window.Speakers = (() => {
     return box;
   }
   function step(d) {
-    const g = groupsOf(conv()), i = Math.max(0, g.findIndex((q) => q.id === cardId));
+    const g = groupsOf(conv()).sort((a, b) => b.meta.duration_s - a.meta.duration_s || a.id.localeCompare(b.id)), i = Math.max(0, g.findIndex((q) => q.id === cardId));
     const n = g[Math.max(0, Math.min(g.length - 1, i + d))]; if (n) { cardId = n.id; clipIdx = 0; showAll = false; render(); }
   }
 
@@ -335,6 +342,7 @@ window.Speakers = (() => {
         }
         if (k === "j" || k === "ArrowRight") { step(1); return true; }
         if (k === "k" || k === "ArrowLeft") { step(-1); return true; }
+        if (k === "Enter" && it.label === "mixed") { advance(); render(); return true; }
         if (k === "Enter" && data.suggestions[it.id]) { write(data.suggestions[it.id].label, it.id, "group", "suggested-accepted").catch(fail); return true; }
         if (/^[1-9]$/.test(k)) { const ch = choices()[Number(k) - 1]; if (ch) write(ch.id, it.id, "group", data.suggestions[it.id]?.label === ch.id ? "suggested-accepted" : "human").catch(fail); return true; }
         if (k === "n") { $(".sp-new")?.focus(); return true; }
