@@ -13,10 +13,11 @@
 //   POST /api/task/:id/labels               agent batch: {reviewer, labels:[...]}
 //                                           source is always model-standin
 
+import { speakerStates, suggestions, segmentLabel, progress, auditSample, speakerResults, exportTruth } from "./speakers.js";
 import fs from "node:fs";
 import path from "node:path";
 import { discoverTasks, loadTask, getPath, isAbstain } from "./task.js";
-import { readTaskLabels, reviewerFile, safeReviewer, buildRow, appendRows, labeledStates } from "./labelstore.js";
+import { readTaskLabels, reviewerFile, safeReviewer, buildRow, appendRows, labeledStates, readRows } from "./labelstore.js";
 import { buildRounds, currentRound } from "./rounds.js";
 import { computeResults, positiveLabel, modelVerdict } from "./results.js";
 import { readWaves, nextWave, waveStatus } from "./waves.js";
@@ -26,7 +27,7 @@ import { readWaves, nextWave, waveStatus } from "./waves.js";
 const cache = new Map();
 function stamp(dir) {
   const st = (f) => { try { const s = fs.statSync(path.join(dir, f)); return `${s.mtimeMs}:${s.size}`; } catch { return "-"; } };
-  return `${st("task.yaml")}|${st("items.jsonl")}`;
+  return `${st("task.yaml")}|${st("items.jsonl")}|${st("conversations.json")}`;
 }
 export function getTask(entry) {
   const key = stamp(entry.dir);
@@ -66,7 +67,7 @@ function humanStates(labels, reviewer) {
   const r = labels.reviewers[safeReviewer(reviewer)];
   const out = new Map();
   if (!r) return out;
-  for (const [id, s] of labeledStates(r.states)) if ((s.source || "human") === "human") out.set(id, s);
+  for (const [id, s] of labeledStates(r.states)) if ((s.source || "human") !== "model-standin") out.set(id, s);
   return out;
 }
 function ownStates(labels, reviewer) {
@@ -123,7 +124,7 @@ export function searchTasks(roots, terms, limit) {
 // has not labeled it, hidden model answers and the stratum (which usually encodes
 // them, e.g. "nano_discard_jev_keep") are withheld by the server, not just the UI.
 function viewItem(t, it, labeledByMe) {
-  const blindNow = t.task.blind && !labeledByMe;
+  const blindNow = t.task.kind === "speakers" || (t.task.blind && !labeledByMe);
   const { hidden, stratum, ...rest } = it;
   const out = { ...rest };
   if (!blindNow) {
@@ -139,7 +140,7 @@ function viewItem(t, it, labeledByMe) {
   return out;
 }
 
-const publicState = (s) => (s ? { label: s.label, fields: s.fields || {}, note: s.note || null, at: s.at || null, source: s.source || "human" } : null);
+const publicState = (s) => (s ? { label: s.label, scope:s.scope, fields: s.fields || {}, note: s.note || null, at: s.at || null, source: s.source || "human" } : null);
 
 function serveMedia(req, res, t, src, json) {
   const rel = String(src || "");
@@ -148,6 +149,7 @@ function serveMedia(req, res, t, src, json) {
   const abs = path.resolve(t.dir, rel);
   if (!abs.startsWith(mediaRoot + path.sep)) return json(res, 400, { error: "media must live under the task's media/ directory" });
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return json(res, 404, { error: "media not found" });
+  if (!fs.realpathSync(abs).startsWith(fs.realpathSync(mediaRoot) + path.sep)) return json(res, 400, { error: "bad media path" });
   const size = fs.statSync(abs).size;
   const TYPES = { ".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".opus": "audio/ogg", ".webm": "audio/webm", ".aac": "audio/aac", ".flac": "audio/flac",
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".mp4": "video/mp4" };
@@ -157,7 +159,7 @@ function serveMedia(req, res, t, src, json) {
   if (range && (range[1] || range[2])) {
     let start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
     let end = range[1] && range[2] ? Math.min(size - 1, Number(range[2])) : size - 1;
-    if (start >= size || start > end) { res.writeHead(416, { "content-range": `bytes */${size}` }); return res.end(); }
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= size || start > end) { res.writeHead(416, { "content-range": `bytes */${size}` }); return res.end(); }
     res.writeHead(206, { "content-type": type, "content-length": end - start + 1, "content-range": `bytes ${start}-${end}/${size}`, "accept-ranges": "bytes", "cache-control": "no-store" });
     return fs.createReadStream(abs, { start, end }).pipe(res);
   }
@@ -170,13 +172,35 @@ export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, j
   const p = u.pathname;
   if (p === "/api/tasks" && req.method === "GET") return json(res, 200, { reviewer, tasks: taskSummaries(roots, reviewer) });
 
-  const m = p.match(/^\/api\/task\/([^/]+)(?:\/(item|labels|results|media|label|undo)(?:\/(.+))?)?$/);
+  const m = p.match(/^\/api\/task\/([^/]+)(?:\/(item|labels|results|media|label|undo|speakers|suggestions)(?:\/(.+))?)?$/);
   if (!m) return false;
   const [, taskId, sub, rest] = m;
   const entry = discoverTasks(roots).find((e) => e.id === decodeURIComponent(taskId));
   if (!entry) throw new HttpError(404, `unknown task '${decodeURIComponent(taskId)}'`);
   const t = getTask(entry);
 
+  if (sub === "suggestions") {
+    const states = speakerStates(readTaskLabels(entry.dir), safeReviewer(reviewer));
+    const picks = suggestions(t.items, states, t.task.suggest_threshold, t.task.kind === "speakers");
+    if (req.method === "GET") return json(res, 200, { suggestions: picks });
+    if (req.method === "POST") {
+      const body = await readBody(req);
+      const ids = body.ids;
+      if (!Array.isArray(ids) || !ids.length || !ids.every(id => picks[id])) return json(res, 409, { error: "suggestions changed; refresh the preview" });
+      const rows = [...new Set(ids)].map(id => buildRow({ item_id:id, label:picks[id].label, ...(t.task.kind === "speakers" ? {scope:"group"} : {}) }, { task:t.task, itemIds:new Set(t.byId.keys()), reviewer, source:"suggested-accepted" }).row);
+      await appendRows(reviewerFile(entry.dir,reviewer),rows);
+      return json(res,200,{ok:true,rows});
+    }
+  }
+  if (sub === "speakers" && req.method === "GET" && t.task.kind === "speakers") {
+    const labels = readTaskLabels(entry.dir), states = speakerStates(labels,safeReviewer(reviewer));
+    const roster = ["You"];
+    const history = Object.values(labels.reviewers).flatMap(r => readRows(r.file).rows).sort((a,b) => (a.at || "").localeCompare(b.at || ""));
+    for (const s of history) if (s.source !== "model-standin" && s.label && !["mixed","noise","unsure"].includes(s.label) && !roster.includes(s.label)) roster.push(s.label);
+    const queue = [...t.items].sort((a,b) => Number(states.get(a.id)?.label != null)-Number(states.get(b.id)?.label != null) || (b.content.segments.length-a.content.segments.length) || a.id.localeCompare(b.id));
+    return json(res,200,{ roster, queue:queue.map(it => ({...viewItem(t,it,false), label:states.get(it.id)?.label ?? null})), suggestions:suggestions(t.items,states,t.task.suggest_threshold),
+      conversations:t.conversations.map(c => ({...c, progress:progress(c,states), segments:c.segments.map(s => ({...s,label:segmentLabel(s,states)})), audit:auditSample(c,t.task.audit?.per_conversation ?? 15).map(s => ({id:s.id,start:s.start,end:s.end,w0:s.w0,w1:s.w1,text:s.text,label:states.get(`audit:${s.id}`)?.label ?? null})) })) });
+  }
   if (!sub && req.method === "GET") {
     ensureFirstWave(entry, t, reviewer);
     const labels = readTaskLabels(entry.dir);
@@ -221,7 +245,7 @@ export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, j
       for (const [, s] of r.states) {
         if (s.label == null && !s.note) continue;
         if (wantS && (s.source || "human") !== wantS) continue;
-        rows.push({ item_id: s.item_id, label: s.label, fields: s.fields, note: s.note, source: s.source || "human", at: s.at,
+        rows.push({ item_id: s.item_id, scope:s.scope, label: s.label, fields: s.fields, note: s.note, source: s.source || "human", at: s.at,
           ...(s.confidence != null ? { confidence: s.confidence } : {}), ...(s.rationale ? { rationale: s.rationale } : {}) });
       }
       out[name] = { labeled: rows.filter((x) => x.label != null).length, malformedRows: r.bad, labels: rows };
@@ -237,6 +261,9 @@ export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, j
     // human (latest wins) — what an agent calling without identity wants.
     const who = want ? safeReviewer(want) : labels.reviewers[me] ? me : null;
     const { waves } = roundsFor(entry, t);
+    if (t.task.kind === "speakers") {
+      const out = speakerResults(t,labels,who); exportTruth(t.dir,out); return json(res,200,out);
+    }
     const out = computeResults({ task: t.task, items: t.items, labels, reviewer: who, fill: u.searchParams.get("fill") === "1", waves });
     const titles = new Map(t.items.map((it) => [it.id, it.title || null]));
     for (const mm of out.models) for (const d of mm.disagreements) d.title = titles.get(d.item_id);
@@ -254,15 +281,21 @@ export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, j
     if (!standin && body.reviewer && safeReviewer(body.reviewer) !== safeReviewer(reviewer)) {
       return json(res, 400, { error: "human labels are attributed to the request's reviewer; omit reviewer" });
     }
-    const input = sub === "undo" ? { item_id: body.item_id, label: null } : body;
-    const built = buildRow(input, { task: t.task, itemIds: new Set(t.byId.keys()), reviewer: who, source: standin ? "model-standin" : "human" });
+    const input = sub === "undo" ? { item_id: body.item_id, label: null, scope:body.scope } : {...body};
+    const segment = t.conversations?.flatMap(c => c.segments).find(s => s.id === input.item_id);
+    if (t.task.kind === "speakers") {
+      input.scope ||= segment ? "segment" : "group";
+      if ((input.scope === "group") !== t.byId.has(input.item_id) || (input.scope !== "group" && !segment)) return json(res,400,{error:"scope does not match item"});
+      if (input.scope === "audit") input.audit_group_label = ownStates(readTaskLabels(entry.dir),reviewer).get(segment.group)?.label ?? null;
+    }
+    const built = buildRow(input, { task: t.task, itemIds: new Set([...t.byId.keys(), ...(t.conversations || []).flatMap(c => c.segments.map(s => s.id))]), reviewer: who, source: standin ? "model-standin" : body.source === "suggested-accepted" ? "suggested-accepted" : "human" });
     if (built.error) return json(res, 400, { error: built.error });
     const file = reviewerFile(entry.dir, who);
     await appendRows(file, [built.row]);
     const labels = readTaskLabels(entry.dir);
-    const s = (labels.reviewers[safeReviewer(who)]?.states || new Map()).get(built.row.item_id);
+    const s = (labels.reviewers[safeReviewer(who)]?.states || new Map()).get(built.row.scope === "audit" ? `audit:${built.row.item_id}` : built.row.item_id);
     const it = t.byId.get(built.row.item_id);
-    return json(res, 200, { ok: true, row: built.row, state: publicState(s), item: standin ? undefined : viewItem(t, it, s && s.label != null) });
+    return json(res, 200, { ok: true, row: built.row, state: publicState(s), item: standin ? undefined : it ? viewItem(t, it, s && s.label != null) : undefined });
   }
 
   if (sub === "labels" && req.method === "POST") {

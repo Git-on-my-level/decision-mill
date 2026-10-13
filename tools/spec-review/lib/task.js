@@ -10,7 +10,7 @@ import path from "node:path";
 import * as yaml from "js-yaml";
 import { normalizeWaves } from "./waves.js";
 
-export const CONTENT_TYPES = new Set(["transcript", "markdown", "text"]);
+export const CONTENT_TYPES = new Set(["transcript", "markdown", "text", "speaker_group"]);
 export const FIELD_TYPES = new Set(["checkbox", "choice", "text"]);
 // Keys the shared keyboard model owns in label mode; a task may not bind them.
 export const RESERVED_KEYS = new Set(["j", "k", "u", "n", "e", "?", "/", " ", "arrowleft", "arrowright", "escape", "enter"]);
@@ -57,6 +57,11 @@ export function normalizeTask(raw, dirName) {
   // Waves replace rounds when set (see waves.js and LABELS.md#waves).
   t.waves = normalizeWaves(raw && raw.waves, t.id, errors, warnings);
 
+  t.suggest_threshold = t.suggest_threshold ?? 0.45;
+  if (!Number.isFinite(t.suggest_threshold) || t.suggest_threshold < 0 || t.suggest_threshold > 2) errors.push("suggest_threshold must be between 0 and 2");
+  if (t.kind === "speakers") t.labels = [{id: "You", label: "You"}, {id: "mixed", label: "Mixed"}, {id: "noise", label: "Not speech / noise"}, {id: "unsure", label: "Unsure"}];
+  if (t.kind === "speakers" && t.waves) errors.push("speaker tasks use a group queue, not waves");
+  if (t.kind === "speakers" && t.audit?.per_conversation != null && (!Number.isInteger(t.audit.per_conversation) || t.audit.per_conversation < 0)) errors.push("audit.per_conversation must be a nonnegative integer");
   const used = new Set();
   const labels = Array.isArray(t.labels) ? t.labels : [];
   if (!labels.length) errors.push("task.yaml needs at least one entry under labels");
@@ -141,7 +146,7 @@ export function parseItems(text, task) {
     if (!c || typeof c !== "object") warnings.push(`${it.id}: no content`);
     else if (!CONTENT_TYPES.has(c.type)) warnings.push(`${it.id}: unknown content.type '${c.type}' (want transcript|markdown|text)`);
     else if (c.type === "transcript" && !Array.isArray(c.segments)) warnings.push(`${it.id}: transcript content needs a segments list`);
-    else if (c.type !== "transcript" && typeof c.body !== "string") warnings.push(`${it.id}: ${c.type} content needs a body string`);
+    else if (!["transcript", "speaker_group"].includes(c.type) && typeof c.body !== "string") warnings.push(`${it.id}: ${c.type} content needs a body string`);
     if (it.hidden != null && (typeof it.hidden !== "object" || Array.isArray(it.hidden))) warnings.push(`${it.id}: hidden must be a mapping`);
     if (it.context != null && !Array.isArray(it.context)) warnings.push(`${it.id}: context must be a list`);
     if (it.media != null && !Array.isArray(it.media)) warnings.push(`${it.id}: media must be a list`);
@@ -155,6 +160,7 @@ export function parseItems(text, task) {
       const s = getPath(it, m.score_path);
       if (s != null && !Number.isFinite(Number(s))) warnings.push(`${it.id}: model '${m.id}' score '${s}' is not a number`);
     }
+    if (it.centroid != null && (!Array.isArray(it.centroid) || !it.centroid.length || !it.centroid.every(Number.isFinite))) errors.push(`${it.id}: centroid needs finite numbers`);
     items.push(it);
   }
   if (!items.length && !errors.length) errors.push("items.jsonl has no items");
@@ -201,7 +207,30 @@ export function loadTask(dir, id) {
   const itemsFile = path.join(dir, "items.jsonl");
   if (!fs.existsSync(itemsFile)) errors.push("items.jsonl missing");
   else parsed = parseItems(fs.readFileSync(itemsFile, "utf8"), norm.task);
+  let conversations = [];
+  if (norm.task.kind === "speakers") {
+    try {
+      conversations = JSON.parse(fs.readFileSync(path.join(dir, "conversations.json"), "utf8"));
+      if (!Array.isArray(conversations)) throw new Error("must be an array");
+      const groups = new Map(parsed.items.map(it => [it.id, it]));
+      const ids = new Set();
+      for (const c of conversations) {
+        if (!c.id || !Array.isArray(c.words) || !Array.isArray(c.segments)) throw new Error("conversation needs id, words and segments");
+        for (const w of c.words) if (!Array.isArray(w) || !Number.isFinite(w[0]) || !Number.isFinite(w[1]) || w[1] < w[0] || typeof w[2] !== "string") throw new Error("invalid word timing");
+        for (const s of c.segments) {
+          if (!s.id || ids.has(s.id) || groups.has(s.id) || !Number.isFinite(s.start) || !Number.isFinite(s.end) || s.end < s.start || !Number.isInteger(s.w0) || !Number.isInteger(s.w1) || s.w0 < 0 || s.w1 > c.words.length || s.w1 < s.w0) throw new Error("invalid segment");
+          ids.add(s.id);
+          if (s.group && !groups.has(s.group)) throw new Error("unknown segment group");
+        }
+      }
+      for (const it of parsed.items) {
+        const c = conversations.find(c => c.id === it.content?.conversation);
+        if (it.content?.type !== "speaker_group" || !c || !Array.isArray(it.content.segments) || !it.content.segments.length || !it.content.segments.every(id => c.segments.some(s => s.id === id && s.group === it.id)) || !(it.content.representatives || []).every(id => it.content.segments.includes(id))) throw new Error("invalid speaker_group membership");
+      }
+    } catch (e) { errors.push(`conversations.json: ${e.message}`); }
+  }
   return {
+    conversations,
     task: norm.task,
     items: parsed.items,
     errors: [...errors, ...parsed.errors],

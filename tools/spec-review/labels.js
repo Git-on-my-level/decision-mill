@@ -23,6 +23,7 @@
 // stand-in's own file (never a file holding human rows); a running server reads it
 // on the next request.
 
+import { speakerResults, exportTruth } from "./lib/speakers.js";
 import fs from "node:fs";
 import path from "node:path";
 import { LABELS_ROOTS } from "./lib/config.js";
@@ -97,6 +98,17 @@ if (cmd === "tasks") {
   if (errors.length) { console.error(`task errors:\n  ${errors.join("\n  ")}`); process.exit(1); }
   const labels = readTaskLabels(t.dir);
   const reviewer = flag("--reviewer") ? safeReviewer(flag("--reviewer")) : null;
+  if (task.kind === "speakers") {
+    const loaded=loadTask(t.dir,t.id);
+    const result=speakerResults({...loaded,dir:t.dir},labels,reviewer); exportTruth(t.dir,result);
+    if (has("--json")) console.log(JSON.stringify(result,null,2));
+    else for (const c of result.conversations) {
+      console.log(`${c.id}: speech labeled ${pct(c.progress.rate)}`);
+      for (const m of [...c.systems,{id:"single speaker",...c.baseline}]) console.log(`  ${m.id}: 1:1 ${pct(m.one_to_one)} · many:1 ${pct(m.many_to_one)} · words ${m.words} · speakers ${m.speakers_found}/${m.speakers_true}`);
+      console.log(`  purity ${pct(c.purity.rate)} (n=${c.purity.compared}, 95% ${c.purity.ci.map(pct).join("–")})`);
+    }
+    process.exit(0);
+  }
   const waves = task.waves ? readWaves(t.dir).waves : null;
   const res = computeResults({ task, items, labels, reviewer, fill: has("--fill"), waves });
   if (has("--json")) { console.log(JSON.stringify(res, null, 2)); process.exit(0); }
@@ -204,7 +216,7 @@ if (cmd === "tasks") {
     for (const s of r.states.values()) {
       if (s.label == null) continue;
       if (wantS && (s.source || "human") !== wantS) continue;
-      rows.push({ item_id: s.item_id, reviewer: name, source: s.source || "human", label: s.label, fields: s.fields || {}, note: s.note || null, at: s.at || null,
+      rows.push({ item_id: s.item_id, ...(s.scope ? {scope:s.scope} : {}), reviewer: name, source: s.source || "human", label: s.label, fields: s.fields || {}, note: s.note || null, at: s.at || null,
         ...(s.confidence != null ? { confidence: s.confidence } : {}) });
     }
   }

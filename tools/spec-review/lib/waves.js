@@ -138,7 +138,7 @@ export function writeWaveFile(taskDir, wave) {
 export function waveReviewer(cfg, labels, reviewer) {
   if (cfg?.reviewer) return cfg.reviewer;
   const r = reviewer ? safeReviewer(reviewer) : null;
-  const humanCount = (rv) => [...rv.states.values()].filter((s) => s.label != null && (s.source || "human") === "human").length;
+  const humanCount = (rv) => [...rv.states.values()].filter((s) => s.label != null && (s.source || "human") !== "model-standin").length;
   if (r && labels.reviewers[r] && humanCount(labels.reviewers[r])) return r;
   let best = null, bestN = 0;
   for (const [name, rv] of Object.entries(labels.reviewers || {})) {
@@ -152,7 +152,7 @@ export function humanStatesOf(labels, reviewer) {
   const out = new Map();
   const rv = reviewer ? labels.reviewers?.[reviewer] : null;
   if (!rv) return out;
-  for (const [id, s] of rv.states) if (s.label != null && (s.source || "human") === "human") out.set(id, s);
+  for (const [id, s] of rv.states) if (s.label != null && (s.source || "human") !== "model-standin") out.set(id, s);
   return out;
 }
 
@@ -477,7 +477,7 @@ export function evaluateStandin({ task, waves, human }) {
 export function prepareStandinRows({ task, items, labels, rows, reviewer, model, includeLabeled = false, human, buildRow, now = new Date() }) {
   const name = safeReviewer(reviewer);
   const existing = labels.reviewers?.[name];
-  if (existing && [...existing.states.values()].some((s) => (s.source || "human") === "human" && s.label != null)) {
+  if (existing && [...existing.states.values()].some((s) => (s.source || "human") !== "model-standin" && s.label != null)) {
     return { error: `labels/${name}.jsonl holds human labels — pick another stand-in name` };
   }
   const ids = new Set(items.map((it) => it.id));

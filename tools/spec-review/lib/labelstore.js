@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export const SOURCES = new Set(["human", "model-standin"]);
+export const SOURCES = new Set(["human", "model-standin", "suggested-accepted"]);
 
 // Reviewer names become file names. Keep them readable (an email or a Tailscale
 // login stays recognizable) but never let one escape labels/.
@@ -43,7 +43,7 @@ export function readRows(file) {
 export function foldRows(rows) {
   const out = new Map();
   for (const r of rows) {
-    const cur = out.get(r.item_id) || { item_id: r.item_id, label: null, fields: {}, note: null, rows: 0 };
+    const cur = out.get(r.scope === "audit" ? `audit:${r.item_id}` : r.item_id) || { item_id: r.item_id, label: null, fields: {}, note: null, rows: 0 };
     cur.rows++;
     if (Object.prototype.hasOwnProperty.call(r, "label")) {
       cur.label = r.label == null ? null : String(r.label);
@@ -52,12 +52,12 @@ export function foldRows(rows) {
       cur.at = r.at;
       cur.source = r.source || "human";
       cur.reviewer = r.reviewer;
-      for (const k of ["confidence", "rationale", "model"]) if (r[k] != null) cur[k] = r[k]; else delete cur[k];
+      for (const k of ["confidence", "rationale", "model", "scope", "audit_group_label"]) if (r[k] != null) cur[k] = r[k]; else delete cur[k];
     } else if (r.fields && typeof r.fields === "object") {
       cur.fields = { ...cur.fields, ...r.fields };
     }
     if (typeof r.note === "string") cur.note = r.note || null;
-    out.set(r.item_id, cur);
+    out.set(r.scope === "audit" ? `audit:${r.item_id}` : r.item_id, cur);
   }
   return out;
 }
@@ -93,16 +93,22 @@ export function buildRow(input, { task, itemIds, reviewer, source, now = new Dat
   if (typeof itemId !== "string" || !itemId) return { error: "item_id required" };
   if (itemIds && !itemIds.has(itemId)) return { error: `unknown item_id '${itemId}'` };
   const src = source || input.source || "human";
-  if (!SOURCES.has(src)) return { error: `source must be human or model-standin (got '${src}')` };
+  if (!SOURCES.has(src)) return { error: `source must be human, suggested-accepted or model-standin (got '${src}')` };
   const row = { item_id: itemId };
   const hasLabel = Object.prototype.hasOwnProperty.call(input, "label");
   if (hasLabel) {
     if (input.label === null) row.label = null;
     else {
       const id = String(input.label);
-      if (!task.labels.some((l) => l.id === id)) return { error: `unknown label '${id}' (want ${task.labels.map((l) => l.id).join("|")})` };
+      if (task.kind !== "speakers" && !task.labels.some((l) => l.id === id)) return { error: `unknown label '${id}' (want ${task.labels.map((l) => l.id).join("|")})` };
+      if (!id.trim() || id.length > 120) return { error: "label must be 1–120 characters" };
       row.label = id;
     }
+  }
+  if (task.kind === "speakers") {
+    row.scope = input.scope || "group";
+    if (!["group", "segment", "audit"].includes(row.scope)) return { error: "invalid scope" };
+    if (row.scope === "audit") row.audit_group_label = input.audit_group_label ?? null;
   }
   if (input.fields != null) {
     if (typeof input.fields !== "object" || Array.isArray(input.fields)) return { error: "fields must be a mapping" };

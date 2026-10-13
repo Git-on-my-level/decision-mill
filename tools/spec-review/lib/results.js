@@ -34,7 +34,7 @@ export function truthMap({ task, labels, reviewer, fill = false, standinName = n
     for (const { name, states } of entries) {
       if (onlyName && name !== onlyName) continue;
       for (const [id, s] of states) {
-        if (s.label == null || (s.source || "human") !== source) continue;
+        if (s.label == null || (source === "human" ? s.source === "model-standin" : (s.source || "human") !== source)) continue;
         const prev = best.get(id);
         if (!prev || String(s.at || "") > String(prev.at || "")) best.set(id, { ...s, by: name });
       }
