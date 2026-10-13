@@ -7,8 +7,7 @@ read the files (or the API), and nothing else holds state.
 
 Label data is personal by nature — transcripts, judgments, notes. **It never lives
 in git.** Keep tasks under `~/.local/share/labels/` (or any path outside a
-repository) and point the server at that root. The only task in this repository is
-the fictional `examples/labels/demo-task/`.
+repository) and point the server at that root. The bundled tasks under `examples/labels/` are fictional.
 
 ```
 ~/.local/share/labels/            # a labels root (LABELS_ROOT / --labels)
@@ -264,3 +263,80 @@ alongside the specs: task.yaml structure, duplicate or reserved keys, items that
 not parse, duplicate ids, unknown content types, model verdicts that are not label
 ids, media paths outside `media/`, unparseable label rows, and wave files that do not
 parse, skip a number, or put an item in two waves.
+
+## Speaker mode
+
+Set `kind: speakers` for diarization truth. `labels:` is unnecessary: **You** is
+built in, people are added by typing, and **Mixed**, **Not speech / noise**, and
+**Unsure** are always available. Names persist in label rows; the roster autocompletes
+names used across this task's conversations. Number keys follow roster order.
+
+```yaml
+kind: speakers
+suggest_threshold: 0.45          # cosine distance, strictly below this bar
+audit: {per_conversation: 15}   # optional; omit to use 15; set 0 to disable
+```
+
+The fictional
+`examples/labels/speaker-demo/` includes a tiny AAC tone file. Generate it with:
+`ffmpeg -f lavfi -i sine=frequency=440:duration=6 -c:a aac -b:a 24k -movflags +faststart media/fiction.m4a`.
+
+Keep the existing real-task format:
+
+- `items.jsonl`: one voice group, with `content: {type: speaker_group,
+  conversation: "c", segments: ["c:s1"], representatives: ["c:s1"]}`,
+  `centroid: [finite numbers]`, `meta: {clips: 1, duration_s: 2}` and optional media.
+- `conversations.json`: an array with `id`, `title`, `date`, `duration_s`,
+  `media: "media/c.m4a"`, `words: [[start,end,"word"]]`, and `segments` with
+  `id`, `start`, `end`, `w0`, `w1`, `short`, `group` (group id or null), `text`.
+  Word slices use **exclusive `w1`**. Segment ids must be globally unique and
+  distinct from group ids. Group membership must match the conversation.
+- `hidden/systems.json`: `{ "c": { "prod": ["speaker_0", null], ... } }`.
+  Only Results reads this file. Label, Transcript, Audit, item APIs and media
+  routes never reveal it, even after labeling a group.
+
+Rows add `scope: group|segment|audit`; omitted scope defaults to group for group
+ids and segment for segment ids at the HTTP boundary. Segment labels override group
+labels. Undo appends null; an undone segment falls back to its group. Audit rows
+fold independently under `audit:<segment-id>` and never change truth. They record
+`audit_group_label`, captured by the server at labeling time, for an independent
+purity comparison. The audit selects a stable pseudorandom sample per conversation,
+shows no inherited label or suggestion, and reports a 95% Wilson interval. This
+estimates segment agreement, not duration-weighted purity.
+
+The queue puts unlabeled groups first, largest by clip count first. Space cycles
+up to four representative clips, seeking shared audio and pausing at the clip end.
+Mixed opens member clips for individual labels. Transcript has clickable words,
+colored turns, speaker-chip segment corrections, a seekable timeline, speed and
+follow-along. Conversation progress is person-labeled segment duration over total
+segment duration. Special labels are excluded from speech truth.
+
+After each write, duration-weighted averages of labeled group embeddings produce
+per-person centroids **within each conversation**. Suggestions below the configured
+cosine distance appear preselected; Enter accepts one. Bulk acceptance shows a
+preview count and appends `source: suggested-accepted` rows. Direct clicks use
+`source: human`; both count as reviewer judgments. Suggested rows remain auditable.
+Ordinary label tasks with `centroid` also have Enter acceptance and a
+"label similar items too" bulk action; their configured label vocabulary applies.
+Suggestions never write automatically.
+
+Results derives per-word truth from segment label, else group label, skipping
+Mixed, Unsure and noise. Each system gets optimal one-to-one Hungarian matching,
+many-to-one majority mapping, and found/true speaker counts. Missing system words
+count as misses on labeled truth. The single-speaker baseline is shown alongside.
+Results and `node tools/spec-review/labels.js stats <task> [--reviewer R] [--json]`
+write `build/truth.json` as `{conversation_id: [person_or_null, ...]}`. This generated
+export is reviewer-specific when a reviewer is supplied; otherwise CLI uses latest
+human judgments across reviewers. Keep it outside git with the task.
+
+Speaker endpoints: `GET /api/task/<id>/speakers` returns the queue, roster,
+conversations, audit sample and suggestions; `GET /api/task/<id>/suggestions` works
+for any embedding task. `POST .../suggestions` with `{ids:[...]}` accepts the current
+confident predictions and rejects ids that are no longer eligible. `POST .../label`
+and `.../undo` accept `scope`. Existing append-only files remain readable.
+
+Audio streams from the media endpoint with `audio/mp4` for m4a, byte Range 206
+responses (bounded, open-ended and suffix), and 416 for unsatisfiable ranges. Use
+AAC in a fast-start m4a container to avoid a late metadata download on phones;
+`ffmpeg -i input.m4a -c copy -movflags +faststart output.m4a` remuxes it. No whole-file
+buffer is used by the server. All browser URLs remain relative for Tailscale HTTPS.

@@ -126,3 +126,17 @@ threshold — the disagreements are where the decision is.
 Label tasks, labels and media never go into git or into a PR, issue or knowledge
 base page; quote aggregates, not content. The only task in this repository is
 fictional.
+
+## Speaker truth
+
+Use label mode with `kind: speakers` for diarization truth. Keep the voice-group
+`items.jsonl`, `conversations.json` word timing and segment membership, and private
+`hidden/systems.json` format documented in `LABELS.md#speaker-mode`. Follow the
+fictional `examples/labels/speaker-demo/` template. People are created from label
+rows; group judgments propagate by duration-weighted embedding similarity within
+a conversation. Segment corrections override groups; blind purity audits are
+independent. Suggestions require explicit acceptance and carry
+`source: suggested-accepted`. Results and `labels.js stats` export `build/truth.json`
+and report optimal 1:1 and many-to-one word accuracy, speaker counts and purity
+intervals. Never expose system predictions before Results. Use AAC fast-start m4a
+and test byte Range playback through the intended proxy.

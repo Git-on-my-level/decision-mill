@@ -141,6 +141,11 @@ All of them are read and normalized in one place, [`lib/config.js`](lib/config.j
   predicted-before-labeling agreement, calibration and the stand-in's misses.
   `Shift+L`/`Shift+I`/`Shift+R` switch tabs.
 
+Speaker tasks (`kind: speakers`) add group labeling, a person roster, embedding
+suggestions, a word transcript and timeline, blind purity audits and diarization
+scores. Results and `stats` export `build/truth.json`; see
+[LABELS.md](../../LABELS.md#speaker-mode).
+
 ### Labels CLI
 
 ```sh

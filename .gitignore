@@ -39,3 +39,6 @@ logs
 # stand-in file is tracked.
 examples/labels/*/labels/*
 !examples/labels/demo-task/labels/opus-standin.jsonl
+
+# Regenerated reviewer-specific speaker truth
+examples/labels/*/build/

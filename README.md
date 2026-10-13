@@ -111,6 +111,11 @@ fictional models and a model stand-in agree with you, per stratum, with a
 threshold curve. Your labels land in `examples/labels/demo-task/labels/` (ignored by
 git).
 
+**Speaker mode** — open *Speaker truth — fictional tones* to label voice groups,
+add people, accept embedding suggestions, and spot-check a colored word transcript
+and timeline. `kind: speakers` tasks produce per-word diarization truth and compare
+systems with one-to-one and many-to-one speaker mapping. See [LABELS.md](LABELS.md#speaker-mode).
+
 ### Labeling real data
 
 ```sh

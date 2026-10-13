@@ -1,0 +1,103 @@
+[
+  {
+    "id": "fiction",
+    "title": "Fictional greeting",
+    "date": "2026-10-01",
+    "duration_s": 6,
+    "media": "media/fiction.m4a",
+    "words": [
+      [
+        0,
+        1,
+        "Hello."
+      ],
+      [
+        1,
+        2,
+        "Ready?"
+      ],
+      [
+        2,
+        3,
+        "Yes."
+      ],
+      [
+        3,
+        4,
+        "Great."
+      ],
+      [
+        4,
+        5,
+        "Thanks."
+      ],
+      [
+        5,
+        6,
+        "Bye."
+      ]
+    ],
+    "segments": [
+      {
+        "id": "fiction:s0",
+        "start": 0,
+        "end": 1,
+        "w0": 0,
+        "w1": 1,
+        "short": false,
+        "group": "fiction:g1",
+        "text": "Hello."
+      },
+      {
+        "id": "fiction:s1",
+        "start": 1,
+        "end": 2,
+        "w0": 1,
+        "w1": 2,
+        "short": false,
+        "group": "fiction:g1",
+        "text": "Ready?"
+      },
+      {
+        "id": "fiction:s2",
+        "start": 2,
+        "end": 3,
+        "w0": 2,
+        "w1": 3,
+        "short": false,
+        "group": "fiction:g2",
+        "text": "Yes."
+      },
+      {
+        "id": "fiction:s3",
+        "start": 3,
+        "end": 4,
+        "w0": 3,
+        "w1": 4,
+        "short": false,
+        "group": "fiction:g2",
+        "text": "Great."
+      },
+      {
+        "id": "fiction:s4",
+        "start": 4,
+        "end": 5,
+        "w0": 4,
+        "w1": 5,
+        "short": false,
+        "group": "fiction:g3",
+        "text": "Thanks."
+      },
+      {
+        "id": "fiction:s5",
+        "start": 5,
+        "end": 6,
+        "w0": 5,
+        "w1": 6,
+        "short": false,
+        "group": "fiction:g3",
+        "text": "Bye."
+      }
+    ]
+  }
+]
