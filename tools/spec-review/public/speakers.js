@@ -3,7 +3,7 @@
    until Results. One hidden <audio> element is shared by every view. */
 window.Speakers = (() => {
   const enc = encodeURIComponent;
-  const SPECIAL = [{ id: "mixed", label: "Mixed" }, { id: "noise", label: "Not speech" }, { id: "unsure", label: "Unsure" }];
+  const SPECIAL = [{ id: "mixed", label: "Mixed", key: "m" }, { id: "noise", label: "Not speech", key: "x" }, { id: "unsure", label: "Unsure", key: "q" }];
   const PALETTE = ["var(--unify)", "var(--keep)", "var(--metric)", "var(--team)", "var(--toss)", "var(--abstain)"];
   let taskId, task, data, tab = "label", convId, cardId, clipIdx = 0, showAll = false, busy = false;
   let audio, stopAt = null, playingSeg = null, onTick = null, wordsIdx = null;
@@ -13,9 +13,24 @@ window.Speakers = (() => {
   const fmt = (s) => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = String(s % 60).padStart(2, "0"); return h ? `${h}:${String(m).padStart(2, "0")}:${x}` : `${m}:${x}`; };
   const dur = (s) => (s < 60 ? `${s.toFixed(s < 10 ? 1 : 0)}s` : fmt(s));
   const isPerson = (l) => l != null && !SPECIAL.some((s) => s.id === l);
-  const choices = () => [...data.roster.map((x) => ({ id: x, label: x })), ...SPECIAL];
-  const color = (l) => (isPerson(l) ? PALETTE[Math.max(0, data.roster.indexOf(l)) % PALETTE.length] : "var(--faint)");
-  const labelText = (l) => choices().find((c) => c.id === l)?.label || l;
+  // Each conversation has its own cast: Me first, then people in the order they were
+  // brought in. Hotkeys 1–9 follow the cast, so they stay short and stable per conversation.
+  const castKey = (c) => `cast:${taskId}:${c.id}`;
+  function cast(c = conv()) {
+    const out = ["You"], add = (l) => { if (isPerson(l) && !out.includes(l)) out.push(l); };
+    pref(castKey(c), []).forEach(add);
+    const used = new Set([...c.segments.map((x) => x.label), ...groupsOf(c).map((q) => q.label), ...(c.audit || []).map((x) => x.label)]);
+    data.roster.filter((p) => used.has(p)).forEach(add);
+    return out;
+  }
+  function bringIn(label, c = conv()) {
+    if (!isPerson(label) || label === "You") return;
+    const list = pref(castKey(c), []); if (!list.includes(label)) setPref(castKey(c), [...list, label]);
+  }
+  const others = (c = conv()) => data.roster.filter((p) => !cast(c).includes(p));
+  const choices = () => [...cast().map((x) => ({ id: x, label: x === "You" ? "Me" : x })), ...SPECIAL];
+  const color = (l) => { if (!isPerson(l)) return "var(--faint)"; const i = cast().indexOf(l); return PALETTE[(i >= 0 ? i : data.roster.indexOf(l)) % PALETTE.length]; };
+  const labelText = (l) => (l === "You" ? "Me" : SPECIAL.find((c) => c.id === l)?.label || l);
   const conv = () => data.conversations.find((c) => c.id === convId) || data.conversations[0];
   const segById = (c, id) => c.segments.find((s) => s.id === id);
   const groupsOf = (c) => data.queue.filter((q) => q.content.conversation === c.id)
@@ -53,7 +68,7 @@ window.Speakers = (() => {
     play(c, seg.start, seg.end, seg.id);
   }
   function syncPlayState() {
-    const on = audio && !audio.paused;
+    const on = Boolean(audio && !audio.paused);
     for (const r of $$("[data-seg]")) r.classList.toggle("playing", on && r.dataset.seg === playingSeg);
     const pp = $("#sp-pp"); if (pp) { pp.textContent = on ? "❚❚" : "▶"; pp.setAttribute("aria-label", on ? "Pause" : "Play"); }
   }
@@ -61,7 +76,7 @@ window.Speakers = (() => {
   // ---- writes ------------------------------------------------------------
   async function write(label, id, scope = "group", source = "human") {
     if (busy || !id || !label) return;
-    busy = true;
+    busy = true; bringIn(label);
     try {
       const r = await postJSON(`${base()}/label`, { item_id: id, label, scope, source });
       remember([r.row]);
@@ -119,6 +134,7 @@ window.Speakers = (() => {
     const people = el("div", { class: "sp-people" });
     choices().forEach((c, i) => {
       const special = !isPerson(c.id);
+      if (special) return;
       const b = btn({ class: `sp-pill${special ? " special" : ""}${current === c.id ? " current" : ""}${suggestion === c.id ? " suggested" : ""}`,
         "data-choice": c.id, onclick: () => write(c.id, id, scope, suggestion === c.id && scope === "group" ? "suggested-accepted" : "human").catch(fail) },
         special ? null : el("i", { class: "sp-dot", style: `background:${color(c.id)}` }), el("span", {}, c.label),
@@ -126,16 +142,24 @@ window.Speakers = (() => {
         suggestion === c.id && !compact ? el("kbd", { class: "enter" }, "↵") : null);
       if (!special) people.append(b);
     });
-    const name = el("input", { class: "sp-new", placeholder: data.roster.length > 1 ? "New person…" : "Who's this? Type a name ↵", list: "sp-roster", "aria-label": "Add a person", maxlength: 80, autocomplete: "off" });
+    const name = el("input", { class: "sp-new", placeholder: cast().length > 1 ? "Someone else…" : "Who's this? Type a name ↵", list: "sp-roster", "aria-label": "Add a person", maxlength: 80, autocomplete: "off" });
     name.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Enter") { e.preventDefault(); const v = name.value.trim(); if (v && !SPECIAL.some((s) => s.id === v.toLowerCase())) write(v, id, scope).catch(fail); }
       if (e.key === "Escape") name.blur();
     });
-    people.append(name, el("datalist", { id: "sp-roster" }, data.roster.map((x) => el("option", { value: x }))));
-    const specials = el("div", { class: "sp-special" }, choices().map((c, i) => isPerson(c.id) ? null :
-      btn({ class: `sp-pill special${current === c.id ? " current" : ""}`, onclick: () => write(c.id, id, scope).catch(fail) }, c.label, !compact && personKeyHint(i) ? el("kbd", {}, personKeyHint(i)) : null)));
-    wrap.append(people, specials);
+    people.append(name, el("datalist", { id: "sp-roster" }, others().map((x) => el("option", { value: x }))));
+    const specials = el("div", { class: "sp-special" }, SPECIAL.map((c) =>
+      btn({ class: `sp-pill special${current === c.id ? " current" : ""}`, onclick: () => write(c.id, id, scope).catch(fail) }, c.label, !compact ? el("kbd", {}, c.key) : null)));
+    wrap.append(people);
+    const more = others();
+    if (more.length) {
+      const row = el("div", { class: "sp-others" }, el("span", { class: "sp-others-h" }, "From other conversations"),
+        ...more.map((p) => btn({ class: "sp-mini-b", style: `--c:${color(p)}`, onclick: () => write(p, id, scope).catch(fail) }, `+ ${p}`)));
+      wrap.append(el("details", { class: "sp-others-wrap", open: pref("othersOpen", false) || null,
+        ontoggle: (e) => setPref("othersOpen", e.target.open) }, el("summary", {}, `${more.length} ${more.length > 1 ? "people" : "person"} from other conversations`), row));
+    }
+    wrap.append(specials);
     return wrap;
   }
   function clipRow(c, s, extra) {
@@ -162,7 +186,7 @@ window.Speakers = (() => {
       const by = {}; for (const [, s] of sugg) by[s.label] = (by[s.label] || 0) + 1;
       status.append(btn({ class: "sp-bulk", onclick: () => acceptAll(sugg.map(([id]) => id)).catch(fail) },
         `Accept ${sugg.length} suggestion${sugg.length > 1 ? "s" : ""}`,
-        el("small", {}, Object.entries(by).map(([l, n]) => `${n} ${l}`).join(" · "))));
+        el("small", {}, Object.entries(by).map(([l, n]) => `${n} ${labelText(l)}`).join(" · "))));
     }
     body.append(status);
     if (!cardId || !groups.some((q) => q.id === cardId)) advance();
@@ -183,7 +207,7 @@ window.Speakers = (() => {
       el("div", {}, el("div", { class: "sp-eyebrow" }, `Group ${idx + 1} of ${groups.length}`),
         el("div", { class: "sp-card-title" }, `${all.length} clip${all.length > 1 ? "s" : ""} · ${dur(it.meta.duration_s)} of speech`)),
       it.label ? el("span", { class: "sp-tag", style: `--c:${color(it.label)}` }, `Labeled ${labelText(it.label)}`) :
-        sug ? el("span", { class: "sp-tag hint", style: `--c:${color(sug.label)}` }, `Sounds like ${sug.label}`, el("small", {}, sug.distance < 0.3 ? "strong match" : "possible match")) : null);
+        sug ? el("span", { class: "sp-tag hint", style: `--c:${color(sug.label)}` }, `Sounds like ${labelText(sug.label)}`, el("small", {}, sug.distance < 0.3 ? "strong match" : "possible match")) : null);
     const list = el("div", { class: "sp-clips" }, (showAll || it.label === "mixed" ? all : reps.slice(0, 4)).map((s) =>
       clipRow(c, s, it.label === "mixed" ? el("div", { class: "sp-seglabel" }, segPicker(s)) : null)));
     const more = all.length > 4 && it.label !== "mixed" ? btn({ class: "sp-link", onclick: () => { showAll = !showAll; render(); } }, showAll ? "Show 4 samples" : `Show all ${all.length} clips`) : null;
@@ -195,7 +219,7 @@ window.Speakers = (() => {
       el("div", { class: "sp-nav" },
         btn({ class: "sp-link", onclick: () => step(-1) }, "← Previous"), btn({ class: "sp-link", onclick: () => step(1) }, "Next →"),
         el("label", { class: "sp-toggle" }, el("input", { type: "checkbox", checked: pref("autoplay", true), onchange: (e) => setPref("autoplay", e.target.checked) }), " Autoplay"),
-        el("span", { class: "sp-keys" }, el("kbd", {}, "Space"), " play next · ", el("kbd", {}, "1–9"), " label · ", el("kbd", {}, "↵"), " accept · ", el("kbd", {}, "u"), " undo"))));
+        el("span", { class: "sp-keys" }, el("kbd", {}, "Space"), " play next · ", el("kbd", {}, cast().length > 1 ? `1–${Math.min(9, cast().length)}` : "1"), " person · ", el("kbd", {}, "m"), el("kbd", {}, "x"), el("kbd", {}, "q"), " mixed / not speech / unsure · ", el("kbd", {}, "n"), " someone else · ", el("kbd", {}, "↵"), " accept · ", el("kbd", {}, "u"), " undo"))));
     if (pref("autoplay", true) && reps[0] && audio?.dataset.card !== it.id) {
       ensureAudio().dataset.card = it.id; clipIdx = 1; play(c, reps[0].start, reps[0].end, reps[0].id);
     }
@@ -203,7 +227,7 @@ window.Speakers = (() => {
   }
   function segPicker(s) {
     const box = el("div", { class: "sp-mini" });
-    data.roster.concat(["noise", "unsure"]).forEach((l) => box.append(btn({ class: `sp-mini-b${s.label === l ? " on" : ""}`, style: `--c:${color(l)}`, onclick: () => write(l, s.id, "segment").catch(fail) }, labelText(l))));
+    cast().concat(["noise", "unsure"]).forEach((l) => box.append(btn({ class: `sp-mini-b${s.label === l ? " on" : ""}`, style: `--c:${color(l)}`, onclick: () => write(l, s.id, "segment").catch(fail) }, labelText(l))));
     return box;
   }
   function step(d) {
@@ -239,7 +263,7 @@ window.Speakers = (() => {
   }
   function renderTranscript(body) {
     const c = conv(); body.append(convChips()); body.append(playerBar(c));
-    const legend = el("div", { class: "sp-legend" }, data.roster.map((p) => el("span", {}, el("i", { class: "sp-dot", style: `background:${color(p)}` }), p)),
+    const legend = el("div", { class: "sp-legend" }, cast().map((p) => el("span", {}, el("i", { class: "sp-dot", style: `background:${color(p)}` }), labelText(p))),
       el("span", {}, el("i", { class: "sp-dot", style: "background:var(--faint)" }), "Unlabeled"));
     body.append(legend, el("p", { class: "sp-note" }, "Click a word to play from there. Click a speaker name to fix that turn."));
     const turns = []; let cur = null;
@@ -257,7 +281,7 @@ window.Speakers = (() => {
       who.addEventListener("click", () => {
         $(".sp-turn .sp-mini")?.remove();
         const mini = el("div", { class: "sp-mini" });
-        data.roster.concat(["noise", "unsure"]).forEach((l) => mini.append(btn({ class: `sp-mini-b${t.label === l ? " on" : ""}`, style: `--c:${color(l)}`,
+        cast().concat(["noise", "unsure"]).forEach((l) => mini.append(btn({ class: `sp-mini-b${t.label === l ? " on" : ""}`, style: `--c:${color(l)}`,
           onclick: async () => { for (const s of t.segs) await postJSON(`${base()}/label`, { item_id: s.id, label: l, scope: "segment", source: "human" }).then((r) => remember([r.row])); await reload(); render(); Shell.refreshNav(); } }, labelText(l))));
         turn.querySelector(".sp-turn-head").after(mini);
       });
@@ -331,6 +355,7 @@ window.Speakers = (() => {
     },
     key(e) {
       const k = e.key;
+      const pick = (x) => (/^[1-9]$/.test(x) ? cast()[Number(x) - 1] : SPECIAL.find((c) => c.key === x)?.id) || null;
       if (e.target?.matches?.("input,select,textarea")) return false;
       if (k === "u") { undo().catch(fail); return true; }
       if (tab === "label") {
@@ -344,12 +369,13 @@ window.Speakers = (() => {
         if (k === "k" || k === "ArrowLeft") { step(-1); return true; }
         if (k === "Enter" && it.label === "mixed") { advance(); render(); return true; }
         if (k === "Enter" && data.suggestions[it.id]) { write(data.suggestions[it.id].label, it.id, "group", "suggested-accepted").catch(fail); return true; }
-        if (/^[1-9]$/.test(k)) { const ch = choices()[Number(k) - 1]; if (ch) write(ch.id, it.id, "group", data.suggestions[it.id]?.label === ch.id ? "suggested-accepted" : "human").catch(fail); return true; }
+        const ch = pick(k);
+        if (ch) { write(ch, it.id, "group", data.suggestions[it.id]?.label === ch ? "suggested-accepted" : "human").catch(fail); return true; }
         if (k === "n") { $(".sp-new")?.focus(); return true; }
       } else if (tab === "audit") {
         const c = conv(), s = c.audit.find((x) => x.label == null); if (!s) return false;
         if (k === " ") { play(c, s.start, s.end, s.id); return true; }
-        if (/^[1-9]$/.test(k)) { const ch = choices()[Number(k) - 1]; if (ch) write(ch.id, s.id, "audit").catch(fail); return true; }
+        const ch = pick(k); if (ch) { write(ch, s.id, "audit").catch(fail); return true; }
       } else if (tab === "transcript" && k === " " && audio) { if (audio.paused) { stopAt = null; audio.play().catch(() => {}); } else audio.pause(); return true; }
       return false;
     },

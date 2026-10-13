@@ -588,6 +588,13 @@ h3.sec { font-size: 15px; font-weight: 640; margin: 26px 0 8px; }
 .sp-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
 .sp-new { min-height: 46px; padding: 0 16px; border-radius: 999px; border: 1px dashed var(--line); background: var(--bg); color: var(--ink); font: inherit; min-width: 0; flex: 1 1 180px; max-width: 280px; }
 .sp-new:focus { outline: 2px solid var(--accent); border-style: solid; }
+.sp-others-wrap { margin-top: 10px; }
+.sp-others-wrap > summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0; list-style: none; }
+.sp-others-wrap > summary::-webkit-details-marker { display: none; }
+.sp-others-wrap > summary::before { content: "+ "; }
+.sp-others-wrap[open] > summary::before { content: "− "; }
+.sp-others { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding-top: 4px; }
+.sp-others-h { display: none; }
 .sp-nav { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; color: var(--muted); font-size: 13px; }
 .sp-keys { margin-left: auto; }
 .sp-toggle { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; font-size: 13px; color: var(--muted); }
