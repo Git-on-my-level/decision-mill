@@ -94,6 +94,7 @@ async function refreshTask() {
 const Label = {
   async open(taskId, tab, itemId) {
     await loadTask(taskId);
+    if (L.task.kind === "speakers") { await Speakers.open(taskId,L.task,tab,itemId); return; }
     L.tab = tab || "label";
     if (itemId && gotoItem(itemId)) L.tab = "label";
     render();
@@ -262,7 +263,17 @@ async function renderCardArea({ scroll = false } = {}) {
     L.cache.set(id, entry);
   }
   if (tok !== L.cardTok) return;
-  slot.replaceChildren(cardEl(entry), actionBar(entry));
+  L.suggestions = (await api(`api/task/${enc(L.taskId)}/suggestions`)).suggestions;
+  if (tok !== L.cardTok) return;
+  const suggestion = L.suggestions[id];
+  const similar = Object.keys(L.suggestions);
+  const assist = el("div", {class:"suggestion-actions"});
+  if (suggestion) assist.append(el("button",{class:"btn",onclick:()=>pick(suggestion.label,"suggested-accepted")},`Suggested: ${labelDef(suggestion.label)?.label || suggestion.label} · Enter`));
+  if (similar.length) assist.append(el("button",{class:"btn",onclick:async()=>{
+    try { const r=await postJSON(`api/task/${enc(L.taskId)}/suggestions`,{ids:similar});L.undo.push(...r.rows.map(r=>r.item_id));L.cache.clear();await refreshTask();L.pos=firstUnlabeled(L.roundIdx) ?? roundIds().length;render();Shell.refreshNav(); }
+    catch(e){toast(e.message,"err");}
+  }},`Label similar items too · accept ${similar.length} confident suggestions`));
+  slot.replaceChildren(assist, cardEl(entry), actionBar(entry));
   if (scroll) scrollToCard();
   prefetch();
 }
@@ -496,11 +507,11 @@ function releaseFocus() {
   if (a && a !== document.body && $("#label-view")?.contains(a) && !isTyping()) a.blur();
 }
 
-async function pick(labelId) {
+async function pick(labelId, source = "human") {
   const id = currentId();
   if (!id || L.saving) return;
   const entry = L.cache.get(id);
-  const body = { item_id: id, label: labelId };
+  const body = { item_id: id, label: labelId, source };
   if (L.task.fields.length) body.fields = { ...(entry?.state?.fields || {}), ...(L.fieldDraft[id] || {}) };
   const note = (L.noteDraft[id] ?? "").trim();
   if (note && note !== (entry?.state?.note || "")) body.note = note;
@@ -995,6 +1006,7 @@ App.help.label = [
   ["Shift+L · I · R", "Label · Items · Results tab"],
 ];
 App.keyHandlers.label = (e) => {
+  if (L.task?.kind === "speakers") return Speakers.key(e);
   const k = e.key;
   const tabKey = { L: "", I: "/items", R: "/results" }[k];
   if (tabKey != null) { location.hash = `#/task/${enc(L.taskId)}${tabKey}`; return true; }
@@ -1020,6 +1032,7 @@ App.keyHandlers.label = (e) => {
     if (k === "k" || k === "ArrowLeft") { step(-1); return true; }
     return false;
   }
+  if (k === "Enter" && L.suggestions?.[currentId()]) { pick(L.suggestions[currentId()].label,"suggested-accepted"); return true; }
   const l = L.task.labels.find((x) => x.key === lk);
   if (l) { pick(l.id); return true; }
   const f = L.task.fields.find((x) => x.key === lk && x.type === "checkbox");

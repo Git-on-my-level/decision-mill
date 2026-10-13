@@ -537,3 +537,18 @@ h3.sec { font-size: 15px; font-weight: 640; margin: 26px 0 8px; }
   .ab-row { gap: 6px; }
   .ab-row .saved, .ab-row .unsaved { display: none; }
 }
+
+/* Speaker truth: generous touch targets, theme-aware speaker colors. */
+.speaker-body { max-width: 1000px; }
+.speaker-body button, .speaker-body select, .speaker-body input { min-height: 44px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); padding: 8px 12px; margin: 3px; }
+.speaker-player { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px; background: var(--panel-2); }
+.speaker-player audio { flex: 1; min-width: 240px; }
+.speaker-reps { display: grid; gap: 8px; margin: 16px 0; }
+.speaker-clip { text-align: left; width: 100%; }
+.speaker-choices { position: sticky; bottom: 0; z-index: 4; background: var(--panel-2); padding: 8px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; }
+.speaker-choices .suggested { outline: 3px solid var(--accent); }
+.speaker-turn { margin: 12px 0; padding: 12px; background: var(--panel); border-left: 4px solid var(--faint); }
+.speaker-body .speaker-word { border: 0; padding: 4px; margin: 0; background: transparent; }
+.speaker-body .speaking { background: var(--me); outline: 2px solid var(--accent); }
+.speaker-timeline { position: relative; height: 52px; margin: 12px 0; background: var(--track); }
+.speaker-timeline button { position: absolute; top: 0; margin: 0; padding: 0; height: 48px; overflow: hidden; border-radius: 0; font-size: 10px; }
