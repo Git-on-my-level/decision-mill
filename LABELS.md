@@ -43,6 +43,8 @@ stratify: balanced                 # balanced (default) | proportional
 summary: collapsed                 # collapsed (default) | open
 user_label: You                    # how is_user segments are labeled (default "You")
 meta_display: [started_at, duration_s, word_count]   # meta keys shown on the card (default below)
+pending: |                         # optional: shown while items.jsonl is empty or missing
+  Items are built by `fetch.sh` on the build host; reload when it finishes.
 waves: {count: 3, size: 20}        # optional: label in frozen waves instead of rounds (see Waves)
 models:                            # how Results compares each model with the human
   - id: jev
@@ -66,6 +68,7 @@ models:                            # how Results compares each model with the hu
 | `round_size`, `stratify` | See [Rounds](#rounds). Ignored when `waves` is set. |
 | `meta_display` | Which `item.meta` keys the card shows, in order. Default `[started_at, duration_s, word_count, source]`; other keys stay hidden. Timestamps (`*_at`, any ISO string) are shown as dates, `*_s` as durations, `word_count` as "N words"; a chip whose content the title already shows is dropped. |
 | `waves` | Label in a few frozen waves, with a model stand-in inferring the rest. See [Waves](#waves). |
+| `pending` | Markdown shown in place of the card while `items.jsonl` is empty or missing. An empty task is a normal **waiting for items** state, never an error; say who runs what to fill it. |
 | `models[].score_path`, `verdict_path` | Dotted paths into each item (usually under `hidden`). Verdicts must use label ids. |
 | `models[].positive_label` | Required for the threshold curve unless it can be inferred (the model's most common verdict at or above its threshold). Set it explicitly. |
 
@@ -227,6 +230,31 @@ only to the stand-in's own file, and refuses a file that holds human rows.
 `next-wave` refuses while the previous wave has unlabeled items (`--early`), while an
 unlabeled item has no stand-in label (`--allow-missing`), or while stand-in labels
 predate the human's latest label (`--allow-stale`).
+
+## Items an agent must fetch
+
+Sometimes the content of an item can only be read by an agent: an MCP connector on
+the reviewer's own account, a tool behind the agent's auth. Keep that content out of
+the agent's replies and context, and make the task rebuildable:
+
+1. **Ship the task first.** Write `task.yaml` with a `pending:` note and an empty
+   `items.jsonl`. The UI shows *waiting for items*, not an error, so the reviewer can
+   open the link before the data lands.
+2. **Fetch in a session whose transcript you keep.** A headless run is simplest:
+   `claude -p --session-id <uuid> --allowedTools "<exact tool>" < prompt.md`. Allow only
+   the read tool, and tell it to make the calls and not to quote or summarize content.
+   Note that `--allowedTools` takes a list, so pass the prompt on stdin.
+3. **Harvest mechanically.** `node tools/spec-review/harvest.js --tool '<regex>'
+   <session.jsonl|dir>... > raw.jsonl` copies each matching tool result verbatim,
+   including results Claude Code spilled to `tool-results/` files. Harvest *every*
+   session that fetched data, not only the latest.
+4. **Build items from disk** with a script that prints counts only, and writes
+   `items.jsonl` by temp file plus rename. Keep a list of ids still missing, and
+   rerun fetch, harvest and build until it stops shrinking.
+5. **Expect partial batches.** Bulk read tools often truncate a response once it hits
+   a size budget and silently drop the later items. Use small batches, lower the
+   per-item size cap for stragglers, and treat ids the source reports as not found
+   as gone, not as failures to retry forever.
 
 ## Reading labels back
 

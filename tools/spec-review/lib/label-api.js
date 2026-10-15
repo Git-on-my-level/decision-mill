@@ -87,7 +87,7 @@ export function taskSummaries(roots, reviewer) {
     const ws = waves ? waveStatus({ task: t.task, items: t.items, waves, labels, reviewer }) : null;
     return {
       id: entry.id, title: t.task.title, question: t.task.question, blind: t.task.blind,
-      items: t.items.length, labeled, standinReviewers: standin,
+      items: t.items.length, empty: !t.items.length, pending: Boolean(t.task.pending), labeled, standinReviewers: standin,
       rounds: { total: ws ? ws.count : rounds.length, done: rounds.filter((r) => r.ids.every((id) => mine.has(id))).length, current: cur < rounds.length ? cur + 1 : null, size: ws ? ws.size : t.task.round_size },
       waves: ws ? { state: ws.state, frozen: ws.frozen, count: ws.count, current: ws.current } : null,
       errors: t.errors.length, warnings: t.warnings.length,

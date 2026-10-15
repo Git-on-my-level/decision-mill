@@ -241,13 +241,23 @@ function scrollToCard() {
   main.scrollTo({ top: Math.max(0, top) });
 }
 
+// A task whose items.jsonl is empty or missing is waiting for data, not broken.
+// task.yaml `pending` says how the items get made; reload once they land.
+function emptyTask() {
+  const t = L.task || {};
+  return el("div", { class: "empty pending-task" },
+    el("h3", {}, "Waiting for items"),
+    t.pending ? el("div", { class: "prose", html: md(t.pending) })
+      : el("p", {}, "items.jsonl is empty or missing. Items appear as soon as it is written; reload to check."));
+}
+
 async function renderCardArea({ scroll = false } = {}) {
   const slot = $("#card-slot");
   if (!slot) return;
   stopPolling();
   const ids = roundIds();
   if (!ids.length) {
-    slot.replaceChildren(waves() ? waveDone() : el("div", { class: "empty" }, "This task has no items."));
+    slot.replaceChildren(waves() && L.index.size ? waveDone() : emptyTask());
     return;
   }
   if (L.pos >= ids.length) { slot.replaceChildren(waves() ? waveDone() : roundDone()); if (scroll) scrollToCard(); return; }

@@ -45,7 +45,12 @@ Rules that matter (each came from a real labeling session):
 5. **Models**: list each under `models` with `verdict_path` (values = label ids)
    and, for scored models, `score_path`, `threshold`, and **`positive_label`** (which
    label a high score means) so Results can draw the threshold curve.
-6. Validate before handing it over:
+6. **Content only an agent can read** (a connector on the reviewer's account): ship
+   the task with a `pending:` note and an empty `items.jsonl` (shown as *waiting for
+   items*), fetch in a headless session, copy results with `harvest.js`, and build
+   items from disk. Never route that content through your own replies. See
+   `LABELS.md#items-an-agent-must-fetch`.
+7. Validate before handing it over:
    `node tools/spec-review/validate.js --labels <root>` (or with `LABELS_ROOT`).
 
 ## Launch

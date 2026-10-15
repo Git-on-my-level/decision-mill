@@ -88,7 +88,8 @@ for (const t of discoverTasks(LABELS_ROOTS)) {
     for (const e of errors) console.log(`  - ${e}`);
   } else {
     const labeled = Object.values(labels.reviewers).reduce((a, r) => a + [...r.states.values()].filter((s) => s.label != null).length, 0);
-    console.log(`ok   task ${t.id}  (${items.length} items, ${labeled} reviewer labels)`);
+    console.log(items.length ? `ok   task ${t.id}  (${items.length} items, ${labeled} reviewer labels)`
+      : `ok   task ${t.id}  (waiting for items${task.pending ? "" : "; add task.yaml pending: to say how they get made"})`);
   }
   for (const w of [...warnings, ...bad]) { warnCount++; console.log(`  warn task ${t.id}: ${w}`); }
 }

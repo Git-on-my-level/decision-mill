@@ -224,4 +224,4 @@ at worst tear the final line (which readers skip).
 | `lib/task.js`, `lib/labelstore.js`, `lib/rounds.js`, `lib/results.js` | label format, store, sampler, results math |
 | `lib/label-api.js` | label-mode HTTP routes |
 | `public/common.js`, `shell.js`, `spec.js`, `label.js` | the UI: helpers, shell/router, the two modes |
-| `validate.js`, `labels.js` | linter and labels CLI |
+| `validate.js`, `labels.js`, `harvest.js` | linter, labels CLI, and the tool-result harvester for agent-fetched content |

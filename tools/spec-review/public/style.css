@@ -639,3 +639,5 @@ h3.sec { font-size: 15px; font-weight: 640; margin: 26px 0 8px; }
 }
 @media (hover: none) { .sp kbd { display: none; } }
 .sp-mixed-bar { justify-content: space-between; }
+.pending-task { text-align: left; max-width: 640px; margin: 0 auto; }
+.pending-task h3 { color: var(--fg, inherit); margin: 0 0 8px; }

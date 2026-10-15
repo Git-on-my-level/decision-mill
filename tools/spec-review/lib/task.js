@@ -42,6 +42,10 @@ export function normalizeTask(raw, dirName) {
   t.title = t.title ? String(t.title) : t.id;
   t.question = t.question ? String(t.question) : "";
   t.instructions = t.instructions ? String(t.instructions) : "";
+  // Shown in place of the card while items.jsonl is empty or missing: how the items
+  // get made (who runs what). An empty task is a normal state, not an error.
+  if (t.pending != null && typeof t.pending !== "string") warnings.push("pending must be a markdown string");
+  t.pending = typeof t.pending === "string" ? t.pending : "";
   // Blind by default: the reviewer's label is the measurement, and seeing a model's
   // answer first turns it into a vote on the model.
   t.blind = t.blind !== false;
@@ -163,7 +167,6 @@ export function parseItems(text, task) {
     if (it.centroid != null && (!Array.isArray(it.centroid) || !it.centroid.length || !it.centroid.every(Number.isFinite))) errors.push(`${it.id}: centroid needs finite numbers`);
     items.push(it);
   }
-  if (!items.length && !errors.length) errors.push("items.jsonl has no items");
   return { items, errors, warnings };
 }
 
@@ -205,8 +208,9 @@ export function loadTask(dir, id) {
   errors.push(...norm.errors);
   let parsed = { items: [], errors: [], warnings: [] };
   const itemsFile = path.join(dir, "items.jsonl");
-  if (!fs.existsSync(itemsFile)) errors.push("items.jsonl missing");
-  else parsed = parseItems(fs.readFileSync(itemsFile, "utf8"), norm.task);
+  // A missing or empty items.jsonl means the task is waiting for its items (see
+  // `pending`): a state the UI shows, not a format error.
+  if (fs.existsSync(itemsFile)) parsed = parseItems(fs.readFileSync(itemsFile, "utf8"), norm.task);
   let conversations = [];
   if (norm.task.kind === "speakers") {
     try {
@@ -233,6 +237,7 @@ export function loadTask(dir, id) {
     conversations,
     task: norm.task,
     items: parsed.items,
+    empty: !parsed.items.length,
     errors: [...errors, ...parsed.errors],
     warnings: [...norm.warnings, ...parsed.warnings],
   };
