@@ -6,6 +6,10 @@ a working UI in both modes on a fresh clone, with citations that open real files
 - `specs/todo-lists.md` — one capability spec for an invented todo app, with at least
   one item of every kind (`DIV`, `INV`, `FC`, `UNK`, `FEAT`, `GEN`), a metrics block,
   and both inline and structured evidence citations.
+- `decision-register/` — a second spec set: a fictional feature-flag register of
+  `DEC` items with its own `decision-mill.yaml` (Graduate / Extend / Kill / Change /
+  Defer buttons, reviewer instructions, and a `code:` locator scheme rooted at
+  `code/`).
 - `code/` — the small invented source tree those citations point at. Three files in
   three languages, so the code panel's syntax labelling has something to do.
 - `labels/demo-task/` — a label task (see `LABELS.md`): 12 invented items covering

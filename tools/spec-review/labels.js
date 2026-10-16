@@ -14,6 +14,17 @@
 //   node labels.js next-wave <task> [--dry-run] [--early] [--extra] [--allow-missing] [--allow-stale]
 //                                                      select and freeze the next wave (waves/wave-N.json)
 //
+// Waiting for the human (a background waiter; exits 0 satisfied, 2 timeout, 1 error):
+//   node labels.js wait <task> --until wave-ready|round-done|labeled:N|done|change
+//                   [--url http://127.0.0.1:PORT] [--timeout 3h] [--reviewer R] [--json]
+//     wave-ready  the human finished every frozen wave (state inferring or done)
+//     round-done  the round/wave that was current when the wait began is labeled
+//     labeled:N   (or 'labeled>=N') the human has labeled at least N items
+//     done        every round/wave is labeled
+//     change      any new label row or frozen wave
+//   With --url it long-polls the server's GET /api/task/<id>/wait; without, it
+//   watches the task files directly.
+//
 // <task> is a task directory, or a task id under LABELS_ROOT / --labels.
 // `stats` prints the same agreement numbers as the Results view (lib/results.js).
 // `export` prints each reviewer's latest label per item (append-only files folded,
@@ -32,15 +43,17 @@ import { readTaskLabels, safeReviewer, buildRow, appendRows, reviewerFile } from
 import { computeResults, positiveLabel, modelVerdict } from "./lib/results.js";
 import { readWaves, nextWave, waveStatus, waveReviewer, humanStatesOf, standinStatesOf, evaluateStandin, prepareStandinRows } from "./lib/waves.js";
 import { buildBrief, parseStandinFile } from "./lib/brief.js";
+import { parseDuration, parseUntil, waitLoop } from "./lib/wait.js";
+import { labelWaitState, labelCondition } from "./lib/label-api.js";
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
 const flag = (name) => { const i = argv.indexOf(name); return i === -1 ? null : argv[i + 1] ?? null; };
 const has = (name) => argv.includes(name);
-const positional = argv.slice(1).filter((a, i, arr) => !a.startsWith("--") && !(i > 0 && ["--reviewer", "--source", "--format", "--labels", "--out", "--max-chars", "--offset", "--limit", "--model"].includes(arr[i - 1])));
+const positional = argv.slice(1).filter((a, i, arr) => !a.startsWith("--") && !(i > 0 && ["--reviewer", "--source", "--format", "--labels", "--out", "--max-chars", "--offset", "--limit", "--model", "--until", "--url", "--timeout", "--standin"].includes(arr[i - 1])));
 
 function usage(code = 2) {
-  console.error("usage: node labels.js tasks [ROOT...] | stats <task> [--reviewer R] [--fill] [--json] | export <task> [--reviewer R] [--source S] [--final] [--format jsonl|csv]\n       waves <task> | infer-prompt <task> [--out F] | import-standin <task> <file> | next-wave <task> [--dry-run]  (see the header of labels.js)");
+  console.error("usage: node labels.js tasks [ROOT...] | stats <task> [--reviewer R] [--fill] [--json] | export <task> [--reviewer R] [--source S] [--final] [--format jsonl|csv]\n       waves <task> | infer-prompt <task> [--out F] | import-standin <task> <file> | next-wave <task> [--dry-run]\n       wait <task> --until wave-ready|round-done|labeled:N|done|change [--url URL] [--timeout 3h]  (see the header of labels.js)");
   process.exit(code);
 }
 
@@ -191,6 +204,47 @@ if (cmd === "tasks") {
   if (r.dupes) console.log(`  ${r.dupes} item(s) appeared twice; the later row wins`);
   if (r.missing.length) console.log(`  ${r.missing.length} unlabeled item(s) still have no row in this file${r.missing.length <= 5 ? `: ${r.missing.join(", ")}` : ""}`);
   if (cfg) console.log("  next: node labels.js next-wave " + t.id + " --dry-run, then without --dry-run");
+} else if (cmd === "wait") {
+  const until = flag("--until");
+  if (!until) { console.error("wait: --until is required (wave-ready | round-done | labeled:N | done | change)"); process.exit(1); }
+  const cond = parseUntil(until, "label");
+  if (cond.error) { console.error(`wait: ${cond.error}`); process.exit(1); }
+  const totalS = parseDuration(flag("--timeout") || "1h");
+  if (totalS == null) { console.error(`wait: bad --timeout '${flag("--timeout")}' (want 3h, 90m, 45s or seconds)`); process.exit(1); }
+  const ref = positional[0];
+  if (!ref) usage(1);
+  const line = (b) => b ? `${b.labeled}/${b.items} labeled by ${b.reviewer || "—"}${b.waves ? ` · waves ${b.waves.frozen}/${b.waves.count} frozen, state ${b.waves.state}` : b.current != null ? ` · ${b.unit} ${b.current} of ${b.rounds.length} current` : " · all rounds done"}` : "";
+  let r;
+  if (flag("--url")) {
+    const base = flag("--url").replace(/\/+$/, "");
+    const id = fs.existsSync(path.resolve(ref)) && isTaskDir(path.resolve(ref)) ? path.basename(path.resolve(ref)) : ref;
+    r = await waitLoop({ totalS, buildUrl: ({ since, timeout, extra }) => {
+      const q = new URLSearchParams({ until, timeout: String(timeout) });
+      if (since) q.set("since", since);
+      if (extra && extra.round != null) q.set("round", String(extra.round));
+      if (flag("--reviewer")) q.set("reviewer", flag("--reviewer"));
+      return `${base}/api/task/${encodeURIComponent(id)}/wait?${q}`;
+    } });
+  } else {
+    // No server: watch the files. Same state and conditions as the endpoint.
+    const t = resolveTask(ref);
+    const base = { since: null, round: null };
+    const deadline = Date.now() + totalS * 1000;
+    for (;;) {
+      let st, c;
+      try { st = labelWaitState(t, flag("--reviewer")); c = labelCondition(st, cond, base); }
+      catch (e) { r = { code: 1, message: e.message }; break; }
+      if (c.error) { r = { code: 1, body: st, message: c.error }; break; }
+      if (c.done) { r = { code: 0, body: { status: "satisfied", until, ...st } }; break; }
+      if (Date.now() >= deadline) { r = { code: 2, body: { status: "timeout", until, ...st } }; break; }
+      await new Promise((ok) => setTimeout(ok, Math.min(2000, Math.max(0, deadline - Date.now()))));
+    }
+  }
+  if (has("--json") && r.body) console.log(JSON.stringify(r.body, null, 2));
+  else if (r.code === 0) console.log(`satisfied: ${until} — ${line(r.body)}`);
+  else if (r.code === 2) console.log(`timeout: ${until} not reached after ${flag("--timeout") || "1h"} — ${line(r.body)}`);
+  if (r.code === 1) console.error(`wait: ${r.message}`);
+  process.exit(r.code);
 } else if (cmd === "export") {
   const t = resolveTask(positional[0]);
   const labels = readTaskLabels(t.dir);

@@ -120,6 +120,17 @@ body[data-mode="label"] #main { padding-bottom: 12px; }
 #spec-header .parse-errors { margin-top: 8px; color: var(--toss); font-size: 12.5px; font-family: var(--mono); }
 #spec-header .spec-warnings { margin-top: 8px; color: var(--metric); font-size: 12px; font-family: var(--mono); opacity: .9; }
 #spec-header .spec-warnings div, #spec-header .parse-errors div { margin-left: 10px; }
+#spec-header .meta .rb-btn { margin-left: 8px; font-family: var(--sans, inherit); vertical-align: 1px; }
+#spec-instr { margin-top: 16px; }
+.verdict-legend { margin-top: 8px; border-collapse: collapse; font-size: 12.5px; }
+.verdict-legend td { padding: 3px 10px 3px 0; vertical-align: top; color: var(--muted); }
+.verdict-legend td:nth-child(2) { white-space: nowrap; }
+.verdict-legend .vtag { font-weight: 600; }
+.verdict-legend .req { color: var(--metric); font-style: normal; }
+/* Verdict keys appear on the focused item only (keyboard use), so the buttons stay quiet. */
+.item .actions .btn kbd { display: none; }
+.item.focused .actions .btn kbd { display: inline-block; margin-left: 5px; font-size: 10.5px; opacity: .7; }
+#progress .next-spec { margin-left: 2px; }
 #toolbar { position: sticky; top: 0; z-index: 5; background: var(--bg); display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 /* Four controls, not eight chips: All / Open / Decided + one kind select. */
 #filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }

@@ -97,7 +97,8 @@ npm install          # or: bun install
 node server.js       # → http://127.0.0.1:4599   (bun server.js also works)
 ```
 
-With no configuration the home screen offers both fictional examples.
+With no configuration the home screen offers the fictional examples: a capability
+spec, a decision register with its own verdict buttons, and three label tasks.
 
 **Spec mode** — open *examples/specs*. Its evidence locators resolve against this
 repository, so the code panel works immediately. Click a citation, hit **Keep** /
@@ -143,10 +144,19 @@ Agents building tasks should follow [`skills/decision-mill/SKILL.md`](skills/dec
 
    ```sh
    LOCATOR_PREFIX=acme REPO_ROOT=/path/to/checkout PORT=4601 node server.js
+   # evidence in several repositories: one scheme per checkout
+   LOCATOR_ROOTS="acme=/src/acme,kb=/src/kb" PORT=4601 node server.js
    ```
 
+   Optionally drop a `decision-mill.yaml` next to the specs to give the set its own
+   verdict buttons, reviewer instructions and locator roots
+   ([FORMAT.md](FORMAT.md#spec-set-config-decision-millyaml)).
+
 4. Run an extraction swarm ([PLAYBOOK.md](PLAYBOOK.md)) to produce the specs.
-5. Decide. Then read the decisions back with agents.
+5. Decide. Then read the decisions back with agents. An agent that needs the
+   human's verdicts before continuing waits for them instead of polling:
+   `node tools/spec-review/wait.js --url http://127.0.0.1:4601 --until all-decided
+   --timeout 3h` exits 0 when every item is decided, 2 on timeout, 1 on error.
 
 ### Configuration
 
@@ -162,6 +172,7 @@ All optional; every knob is an environment variable read in
 | `LABELS_ROOT` | `<repo>/examples/labels` when nothing else is configured | Directories holding label tasks (comma-separated). Configuring only one mode hides the other mode's example. |
 | `LOCATOR_PREFIX` | `repo` | Evidence-locator scheme: `repo:path/to/file`. |
 | `REPO_ROOT` | the repo containing the tool | Checkout that locators resolve against. |
+| `LOCATOR_ROOTS` | *(empty)* | Several schemes at once: `acme=/src/acme,kb=/src/kb`. The first is the primary root. `LOCATOR_PREFIX`/`REPO_ROOT`, if set too, are added. A set's `decision-mill.yaml` can add `locator_roots` of its own. |
 | `PROJECT_NAME` | *(empty)* | Subtitle in the UI sidebar. |
 | `REVIEWER` | `reviewer` | Attribution for spec notes and the label file name. When unset, a `Tailscale-User-Login` request header is used instead. |
 | `SPECS_EXCLUDE` | `README.md,FORMAT.md` | Files in `SPECS_DIR` that are docs, not specs. |
@@ -171,13 +182,13 @@ All optional; every knob is an environment variable read in
 
 | Path | What it is |
 | ---- | ---------- |
-| [`FORMAT.md`](FORMAT.md) | The spec format: item structure, decision vocabulary, and the rules that keep decisions readable after the spec is gone. |
+| [`FORMAT.md`](FORMAT.md) | The spec format: item structure, decision vocabulary, the optional per-set `decision-mill.yaml`, and the rules that keep decisions readable after the spec is gone. |
 | [`LABELS.md`](LABELS.md) | The label task format: task.yaml, items.jsonl, append-only label files, rounds, and the agent API. |
 | [`PLAYBOOK.md`](PLAYBOOK.md) | Running extraction swarms, metrics agents, decision consumption, and removal records. |
 | [`tools/spec-review/`](tools/spec-review) | The local UI for both modes, the format linter, and the labels CLI. Two dependencies, no build step. |
 | [`skills/decision-mill/`](skills/decision-mill/SKILL.md) | The skill future agents load to pick a mode, build a label task, launch it, and read results back. |
 | [`docs/design-notes.md`](docs/design-notes.md) | The real labeling sessions label mode was designed from, and which finding drove which choice. |
-| [`examples/`](examples) | A fictional todo-app spec plus the fictional code it cites, and a fictional label task, so the tool works on a fresh clone. |
+| [`examples/`](examples) | A fictional todo-app spec, a fictional decision register with its own `decision-mill.yaml`, the fictional code they cite, and fictional label tasks, so the tool works on a fresh clone. |
 
 ## Design commitments
 

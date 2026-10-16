@@ -101,6 +101,9 @@ Practical notes from real sessions:
 - Reverse mistakes immediately — one-click deciding is only safe because **↩ Undo
   decision** is also one click. The undo lands in the note timeline, so the trail
   survives.
+- The orchestrator does not poll while the human works. It runs
+  `node tools/spec-review/wait.js --url http://127.0.0.1:4599 --until all-decided`
+  (or `no-open`, or `--spec <slug>`) as a background waiter and resumes when it exits.
 - Beware the batch-error class: a run of similar items decided quickly, all wrong the
   same way. The commonest version is deciding items whose evidence lives entirely in
   code another team owns. `DELEGATED_PATHS` turns that into a lint warning; the honest
@@ -136,6 +139,7 @@ Before a capability's spec goes:
 | `DIV` unified | the delivering change's commit message / ADR |
 | architectural call | an ADR |
 | `UNK` never grounded | an open question in your tracker, explicitly |
+| `DEC` | wherever its verdict acts: a flag-removal change, a config PR, an ADR |
 
 Then delete the spec. The gate:
 

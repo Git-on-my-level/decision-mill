@@ -1,0 +1,22 @@
+# FICTIONAL spec-set config for the example decision register (see FORMAT.md,
+# "Spec-set config"). It gives this set its own verdict buttons, reviewer
+# instructions, and a second locator scheme.
+instructions: |
+  Each card is one **feature flag** in the (fictional) todo app. Decide what
+  happens to the flag, not whether the feature is good:
+
+  - **Graduate** — the new path wins; delete the flag and the old path.
+  - **Extend** — keep the flag. Say until when, and what would end it.
+  - **Kill** — delete the flag *and* the new path. Say why.
+  - **Change** — keep the flag but change its rollout (cohort, default).
+  - **Defer** — not this review.
+
+  Type the reason in the box first, then click the verdict.
+decisions:
+  - {id: graduate, label: Graduate, hint: "delete the flag; the new path ships to everyone", tone: positive}
+  - {id: extend, label: Extend, hint: "keep the flag; say until when and why", requires_detail: true}
+  - {id: kill, label: Kill, hint: "delete the flag and the new path", tone: negative, requires_detail: true}
+  - {id: change, label: Change, hint: "keep the flag, change its rollout"}
+  - {id: defer, label: Defer, hint: "not this review; stays open"}
+locator_roots:
+  code: ../code   # code:web/src/TodoList.tsx -> examples/code/web/src/TodoList.tsx

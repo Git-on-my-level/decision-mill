@@ -13,7 +13,10 @@ sharing one UI and keyboard model. Formats: `FORMAT.md` (specs), `LABELS.md`
 
 - **Spec mode** — the human must *decide* design questions (keep / change / defer /
   unify) and the answer is an instruction for coding agents. Write specs per
-  `FORMAT.md`; follow `PLAYBOOK.md`.
+  `FORMAT.md`; follow `PLAYBOOK.md`. For a register whose verdicts are not
+  keep/change (e.g. flags: graduate / extend / kill), use `DEC-<CAP>-NNN` items and a
+  `decision-mill.yaml` in the specs directory with `instructions:` and `decisions:`
+  (see "Spec mode with your own verdicts" below).
 - **Label mode** — the *same question* is asked of many items and the answer is a
   judgment (keep/noise, useful/annoying, correct/wrong). Use it to measure a model,
   pick a threshold, or produce a labeled set. Under ~50 items, just ask in chat.
@@ -51,7 +54,7 @@ Rules that matter (each came from a real labeling session):
    label a high score means) so Results can draw the threshold curve.
 6. **Content only an agent can read** (a connector on the reviewer's account): ship
    the task with a `pending:` note and an empty `items.jsonl` (shown as *waiting for
-   items*), fetch in a headless session, copy results with `harvest.js`, and build
+   items*; remove the note once items land — `validate.js` warns until you do), fetch in a headless session, copy results with `harvest.js`, and build
    items from disk. Never route that content through your own replies. See
    `LABELS.md#items-an-agent-must-fetch`.
 7. Validate before handing it over:
@@ -65,6 +68,10 @@ node server.js --labels ~/.local/share/labels --port 4610
 # spec mode: SPECS_DIR=/path/to/specs node server.js --port 4601
 ```
 
+Evidence in several repositories: `LOCATOR_ROOTS="app=/src/app,kb=/src/kb"` (or
+`locator_roots:` in the set's `decision-mill.yaml`). Read the startup banner: it
+lists each set's vocabulary, every locator root (MISSING if absent) and the URLs.
+
 Bind stays on 127.0.0.1. For a human on another machine, proxy it on the tailnet:
 `tailscale serve --bg --https=4610 http://127.0.0.1:4610` (off:
 `tailscale serve --https=4610 off`). Leave `REVIEWER` unset to attribute labels by
@@ -75,10 +82,45 @@ Tell the human: the URL, the task name, round or wave size and rough time ("20
 cards, ~6 min"), and that keys are on the buttons (`1/2/3`, `s` skip, `u` undo,
 `n` note, `i` instructions, `?` help).
 
+## Spec mode with your own verdicts
+
+Put `decision-mill.yaml` next to the spec files (fictional template:
+`examples/decision-register/`):
+
+```yaml
+instructions: |            # markdown; opens on the reviewer's first visit, `i` toggles
+  What each card is, and what each verdict commits to.
+decisions:                 # replaces Keep/Change/Defer/Unify; keys 1..9 in this order
+  - {id: graduate, label: Graduate, hint: "delete the flag; ship the new path", tone: positive}
+  - {id: extend, label: Extend, hint: "keep the flag; say until when", requires_detail: true}
+  - {id: change, label: Change}    # change keeps its remove:/change: prefix rule
+  - {id: defer}                    # defer keeps the item open
+```
+
+The stored `decision` is the button id. Validate with `node tools/spec-review/validate.js
+--locators` (it also checks the yaml and warns on a `<CAP>` code reused across files).
+
+## Waiting for the human (never poll)
+
+Hand the human the URL, then block on a background waiter that exits on every
+terminal state — 0 satisfied, 2 timeout, 1 server error/unreachable/impossible:
+
+```sh
+# spec mode: all-decided | no-open | decided:N | change   (--spec SLUG to scope it)
+node tools/spec-review/wait.js --url http://127.0.0.1:4601 --until all-decided --timeout 3h
+# label mode: wave-ready | round-done | labeled:N | done | change
+node tools/spec-review/labels.js wait <task> --url http://127.0.0.1:4610 --until wave-ready --timeout 3h
+```
+
+Run it with your harness's background-command facility and a hard timeout above
+`--timeout`. Quote `'labeled>=N'` in a shell, or use `labeled:N`.
+
 ## Waves: the between-wave procedure (you are the stand-in)
 
 Wave 1 freezes itself when the human opens the task. When they finish a wave the UI
-says the agent is inferring; that is you. Each time:
+says the agent is inferring; that is you. Do not poll for that moment: after telling
+the human a wave is ready, run `labels.js wait <task> --url … --until wave-ready
+--timeout 3h` in the background; it exits 0 when the wave is labeled. Each time:
 
 1. `node tools/spec-review/labels.js waves <task>` — state must be `inferring`.
 2. `node tools/spec-review/labels.js infer-prompt <task> --out <scratch>/brief.md` and
@@ -93,7 +135,8 @@ says the agent is inferring; that is you. Each time:
    (all-or-nothing; refuses the human's file).
 5. `node tools/spec-review/labels.js next-wave <task> --dry-run`, check reasons and
    strata, then run it without `--dry-run`. The UI shows the new wave within 15 s.
-6. Tell the human the wave is ready. After the last wave, report the **hold-out**
+6. Tell the human the wave is ready, and start the `wait --until wave-ready` waiter
+   again. After the last wave, report the **hold-out**
    agreement with n and interval against the `accept` bar; if it is `rejected`,
    report human-only numbers only (optionally re-infer and `next-wave --extra`).
 

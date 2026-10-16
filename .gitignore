@@ -42,3 +42,7 @@ examples/labels/*/labels/*
 
 # Regenerated reviewer-specific speaker truth
 examples/labels/*/build/
+
+# npm run at the repository root (instead of tools/spec-review) leaves an empty
+# lockfile behind; the only real one is tools/spec-review/package-lock.json.
+/package-lock.json

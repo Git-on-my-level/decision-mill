@@ -42,15 +42,50 @@ const splitList = (vals) => vals
   .map((s) => s.trim()).filter(Boolean)
   .map((s) => path.resolve(expandHome(s)));
 
-// `repo:` by default. Configure per program (`acme:`, `core:`, …) and record the
-// choice in an ADR so specs stay portable across checkouts.
+// A locator scheme: "repo" or "repo:" normalized to the bare name.
+export const SCHEME_RE = /^[a-z][a-z0-9+.-]*$/;
+export const normScheme = (s) => String(s || "").trim().replace(/:+$/, "");
+
+// Locator roots: scheme -> checkout. `LOCATOR_ROOTS="omi=/path/a,kb=/path/b"`
+// declares several; `LOCATOR_PREFIX` + `REPO_ROOT` is the single-root case (and is
+// still added when either is set explicitly alongside LOCATOR_ROOTS). The first
+// root is the primary one: LOCATOR_PREFIX/REPO_ROOT below name it, for callers
+// that only know about one.
+export function parseLocatorRoots(spec, baseDir = process.cwd()) {
+  const roots = {};
+  const errors = [];
+  for (const part of String(spec || "").split(",").map((s) => s.trim()).filter(Boolean)) {
+    const eq = part.indexOf("=");
+    const scheme = normScheme(eq > 0 ? part.slice(0, eq) : "");
+    const dir = eq > 0 ? part.slice(eq + 1).trim() : "";
+    if (!SCHEME_RE.test(scheme) || !dir) { errors.push(`bad locator root '${part}' (want scheme=/path, e.g. repo=/src/app)`); continue; }
+    roots[scheme] = path.resolve(baseDir, expandHome(dir));
+  }
+  return { roots, errors };
+}
+
 const rawPrefix = String(process.env.LOCATOR_PREFIX || "repo").trim();
-// Accept "repo" or "repo:" and normalize to the bare scheme name.
-export const LOCATOR_SCHEME = rawPrefix.replace(/:+$/, "");
-if (!/^[a-z][a-z0-9+.-]*$/.test(LOCATOR_SCHEME)) {
+const primaryScheme = normScheme(rawPrefix);
+if (!SCHEME_RE.test(primaryScheme)) {
   throw new Error(`LOCATOR_PREFIX must be a scheme like "repo" or "acme" (got "${rawPrefix}")`);
 }
-// The literal string that opens every locator, e.g. "repo:".
+const envRoots = parseLocatorRoots(process.env.LOCATOR_ROOTS);
+if (envRoots.errors.length) throw new Error(`LOCATOR_ROOTS: ${envRoots.errors.join("; ")}`);
+const singleExplicit = Boolean(process.env.LOCATOR_PREFIX || process.env.REPO_ROOT);
+// Global roots, in declaration order. Without LOCATOR_ROOTS this is exactly the old
+// single root: `repo:` (or LOCATOR_PREFIX) -> REPO_ROOT (default: this repository).
+export const LOCATOR_ROOTS = (() => {
+  const out = {};
+  if (!Object.keys(envRoots.roots).length || singleExplicit) out[primaryScheme] = process.env.REPO_ROOT || PROJECT_ROOT;
+  for (const [k, v] of Object.entries(envRoots.roots)) if (!(k in out)) out[k] = v;
+  return out;
+})();
+// Schemes the operator configured on purpose; they override a spec set's own roots.
+export const EXPLICIT_ROOT_SCHEMES = new Set([...(singleExplicit ? [primaryScheme] : []), ...Object.keys(envRoots.roots)]);
+// `repo:` by default. Configure per program (`acme:`, `core:`, …) and record the
+// choice in an ADR so specs stay portable across checkouts.
+export const LOCATOR_SCHEME = Object.keys(LOCATOR_ROOTS)[0];
+// The literal string that opens every primary-root locator, e.g. "repo:".
 export const LOCATOR_PREFIX = `${LOCATOR_SCHEME}:`;
 
 const specsConfigured = Boolean(FLAGS["--specs"] || process.env.SPECS_DIR);
@@ -61,14 +96,14 @@ const labelsConfigured = Boolean(FLAGS["--labels"] || process.env.LABELS_ROOT);
 const nothingConfigured = !specsConfigured && !labelsConfigured;
 
 // `<repo>/specs` normally. In a fresh clone of decision-mill itself there is no
-// specs/ directory, so fall back to the bundled example — that is what makes
+// specs/ directory, so fall back to the bundled examples (a capability spec and a
+// decision register with its own decision-mill.yaml) — that is what makes
 // `node server.js` show a working UI with zero configuration.
-function defaultSpecsDir() {
+function defaultSpecsDirs() {
   const own = path.resolve(PROJECT_ROOT, "specs");
-  if (fs.existsSync(own)) return own;
-  const example = path.resolve(PROJECT_ROOT, "examples/specs");
-  if (fs.existsSync(example)) return example;
-  return own;
+  if (fs.existsSync(own)) return [own];
+  const examples = ["examples/specs", "examples/decision-register"].map((d) => path.resolve(PROJECT_ROOT, d)).filter((d) => fs.existsSync(d));
+  return examples.length ? examples : [own];
 }
 
 // Every spec set the server offers on its home screen. SPECS_DIR may name several
@@ -76,7 +111,7 @@ function defaultSpecsDir() {
 // what keeps the original single-set API and its curl examples working.
 export const SPECS_DIRS = specsConfigured
   ? splitList([...(FLAGS["--specs"] || []), ...(FLAGS["--specs"] ? [] : [process.env.SPECS_DIR])])
-  : nothingConfigured || !labelsConfigured ? [defaultSpecsDir()] : [];
+  : nothingConfigured || !labelsConfigured ? defaultSpecsDirs() : [];
 export const SPECS_DIR = SPECS_DIRS[0] || null;
 
 // Roots that contain label-task directories (`<root>/<task-id>/task.yaml`). A root
@@ -90,7 +125,8 @@ export const LABELS_ROOTS = labelsConfigured
 // Checkout that `<prefix>:<path>` resolves against for the code panel and
 // `validate.js --locators`. Defaults to this repository, which is what makes the
 // bundled example spec open real files with no configuration at all.
-export const REPO_ROOT = process.env.REPO_ROOT || PROJECT_ROOT;
+// With LOCATOR_ROOTS, this is the primary (first) root.
+export const REPO_ROOT = LOCATOR_ROOTS[LOCATOR_SCHEME];
 
 export const PORT = Number((FLAGS["--port"] || []).at(-1) || process.env.PORT || 4599);
 // Loopback by default. Serving to another machine is better done with a reverse
