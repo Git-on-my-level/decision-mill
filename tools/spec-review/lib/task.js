@@ -9,8 +9,9 @@ import fs from "node:fs";
 import path from "node:path";
 import * as yaml from "js-yaml";
 import { normalizeWaves } from "./waves.js";
+import { proposalProblems } from "./proposal.js";
 
-export const CONTENT_TYPES = new Set(["transcript", "markdown", "text", "speaker_group"]);
+export const CONTENT_TYPES = new Set(["transcript", "markdown", "text", "proposal", "speaker_group"]);
 export const FIELD_TYPES = new Set(["checkbox", "choice", "text"]);
 // Keys the shared keyboard model owns in label mode; a task may not bind them.
 export const RESERVED_KEYS = new Set(["j", "k", "u", "n", "e", "?", "/", " ", "arrowleft", "arrowright", "escape", "enter"]);
@@ -148,8 +149,9 @@ export function parseItems(text, task) {
     seen.add(it.id);
     const c = it.content;
     if (!c || typeof c !== "object") warnings.push(`${it.id}: no content`);
-    else if (!CONTENT_TYPES.has(c.type)) warnings.push(`${it.id}: unknown content.type '${c.type}' (want transcript|markdown|text)`);
+    else if (!CONTENT_TYPES.has(c.type)) warnings.push(`${it.id}: unknown content.type '${c.type}' (want transcript|markdown|text|proposal)`);
     else if (c.type === "transcript" && !Array.isArray(c.segments)) warnings.push(`${it.id}: transcript content needs a segments list`);
+    else if (c.type === "proposal") for (const p of proposalProblems(c)) warnings.push(`${it.id}: ${p}`);
     else if (!["transcript", "speaker_group"].includes(c.type) && typeof c.body !== "string") warnings.push(`${it.id}: ${c.type} content needs a body string`);
     if (it.hidden != null && (typeof it.hidden !== "object" || Array.isArray(it.hidden))) warnings.push(`${it.id}: hidden must be a mapping`);
     if (it.context != null && !Array.isArray(it.context)) warnings.push(`${it.id}: context must be a list`);

@@ -1,0 +1,22 @@
+# Fictional demo of the `proposal` content type — every name, conversation and
+# rule here is invented. Each card is a proposed edit to a notes app: judge
+# whether the evidence supports it.
+id: proposal-demo
+title: Accept or reject — fictional proposed edits
+question: Should this edit be accepted, given the evidence and the rules?
+instructions: |
+  The **proposed change** is at the top: struck text is what goes away, underlined
+  text is what replaces it. The **evidence** below marks the old and new values
+  wherever they appear. The rules are folded at the bottom; the most relevant ones
+  are shown.
+labels:
+  - {id: accept, label: Accept, key: "1", tone: positive}
+  - {id: reject, label: Reject, key: "2", tone: negative}
+  - {id: unsure, label: Unsure, key: "3"}
+fields:
+  - {id: reason, type: text, label: Reason}
+blind: true
+round_size: 6
+models:
+  - id: checker
+    verdict_path: hidden.checker.verdict

@@ -5,6 +5,7 @@
 // judge from what the human saw, or "stand-in agrees with model X" means nothing.
 
 import { isAbstain } from "./task.js";
+import { proposalText } from "./proposal.js";
 
 const pad2 = (n) => String(n).padStart(2, "0");
 const clock = (sec) => {
@@ -26,7 +27,8 @@ function contentText(c, task, maxChars) {
   if (c.type === "transcript") {
     text = (c.segments || []).filter((s) => s && String(s.text || "").trim())
       .map((s) => `${s.start != null ? `[${clock(s.start)}] ` : ""}${speaker(s, task)}: ${oneLine(s.text)}`).join("\n");
-  } else text = String(c.body ?? "");
+  } else if (c.type === "proposal") text = proposalText(c);
+  else text = String(c.body ?? "");
   if (!text) text = "(empty)";
   return text.length > maxChars ? `${text.slice(0, maxChars)}\n… (cut at ${maxChars} chars)` : text;
 }
