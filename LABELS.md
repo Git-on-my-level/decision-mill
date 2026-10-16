@@ -91,7 +91,7 @@ One JSON object per line:
 | Key | Required | Meaning |
 | --- | -------- | ------- |
 | `id` | yes | Unique string. Labels reference it forever; never reuse one. |
-| `content` | yes | `{"type": "transcript", "segments": [...]}`, `{"type": "markdown", "body": "…"}` or `{"type": "text", "body": "…"}`. |
+| `content` | yes | `{"type": "transcript", "segments": [...]}`, `{"type": "markdown", "body": "…"}`, `{"type": "text", "body": "…"}`, or `{"type": "proposal", …}` (a proposed edit to judge; see [Proposal items](#proposal-items)). |
 | `segments[]` | — | `speaker`, `is_user` (styled as the reviewer), `start` seconds (shown as a timestamp; clickable when audio exists), `text`, optional `name` (display name). |
 | `title` | no | Shown above the content. |
 | `meta` | no | Shown as chips on the card (only the keys in `meta_display`). **Always visible, even when blind — never put model output here.** |
@@ -102,6 +102,61 @@ One JSON object per line:
 | `round` | no | Pins the item to an explicit round (a number). See below. |
 | `truncated` | no | `true` marks an excerpt; the card says so. Prefer whole items. |
 | `hidden` | no | Model answers and scores, referenced by `models[].*_path`. |
+
+## Proposal items
+
+Use `content.type: proposal` when the reviewer judges a **proposed edit**: should a
+verifier, a model or a teammate's change be accepted, given some evidence and some
+rules? Never paste the edit and its evidence as JSON into a markdown body; the
+card turns this structure into something a person can judge in seconds:
+
+1. **The change** first, as one readable line with an inline diff:
+   `Title  ~~Kiln packing notes~~ → Mirexu kiln shipping checklist`. Deleted words are
+   red and struck, inserted words green and underlined (never color alone); a
+   one-word spelling change also shows a letter diff, `Mirex[ah→u]`. An empty
+   `before` reads "(new)", an empty `after` "(removed)". Long values become one
+   sentence with the edits inline.
+2. **The evidence**, one card per record, with the old and new values marked
+   wherever they appear, the cited transcript part as speech bubbles, and the raw
+   record behind a folded "raw" toggle.
+3. **The policy**, folded to "Policy (n rules)", one rule per sentence; rules
+   matching `policy_focus` stay visible under it.
+
+The question goes in the verdict bar, once.
+
+```json
+{"id": "review-01", "title": "Proposal review 01",
+ "content": {"type": "proposal",
+   "question": "Should the verifier accept this edit?",
+   "change": {"kind": "Spelling", "target": "conversations/c1#s1",
+              "before": "Mirexah", "after": "Mirexu", "raw": {"kind": "spelling", "operation": {}}},
+   "evidence": [{"title": "Conversation · Sep 10 · 10:00–10:10 UTC", "tag": "Target", "ref": "conversations/c1",
+                 "segments": [{"id": "s1", "is_user": true, "start": 0, "text": "Please send the tray to Mirexah."}],
+                 "cited": ["s1"], "facts": {"Title": "Kiln notes"}, "raw": {}}],
+   "highlight": ["Mirexah", "Mirexu"],
+   "policy": "Agree only with directly supported facts. Missing evidence is insufficient.",
+   "policy_focus": ["directly supported"]},
+ "hidden": {"gold": {"verdict": "reject"}}}
+```
+
+| Key | Meaning |
+| --- | ------- |
+| `change.kind` | Short label for the kind of edit (`Title`, `Spelling`, `Merge conversations`). |
+| `change.before`, `change.after` | The old and new value. Strings get a word diff; other values are shown as compact JSON. |
+| `change.summary` | One line for a change that is not a value replacement ("Merge these two conversations into one"). |
+| `change.fields` | `[{name, before, after}]` for a multi-field change, shown as a table. Differing rows come first; matching rows fold into one "Same on both" line. Values may be any JSON. |
+| `change.before_label`, `after_label` | Column headings for `fields` (default Before / After). |
+| `change.compare` | `true` when `fields` compares two records side by side (two conversations, two memories) rather than old → new: differences are marked on both sides instead of struck. |
+| `change.notes` | Short factual lines under the change, e.g. a computed overlap. |
+| `change.target`, `change.raw` | The edited record's id, and the raw proposal (folded). |
+| `evidence[]` | `title` (required, human: "Conversation · 10:00–10:10 · 'title'"), `tag` (a chip such as Target / Other / Cited), `ref`, `segments` (transcript segments, rendered like a transcript), `cited` (segment ids shown first; the rest fold away), `text`, `facts` (`{name: value}` or `[{name, value}]`; null shows "— missing"), `raw` (folded). |
+| `highlight` | Terms to mark in the evidence, as strings or `{text, side: before\|after}`. Default: the change's `before` and `after` strings. |
+| `policy` | Rules text (split into sentences) or a list of rules. |
+| `policy_focus` | Snippets; rules containing one are highlighted and shown while the policy is folded. Pick them per kind of edit, not per answer, so they never hint at the verdict. |
+| `question` | Replaces the task's question in the verdict bar for this item. |
+
+`examples/labels/proposal-demo/` is a fictional task with every shape (spelling,
+title, CJK, a long rewrite, multi-field, a two-record comparison).
 
 ## labels/\<reviewer\>.jsonl
 
@@ -288,7 +343,7 @@ Writes must be `content-type: application/json`.
 
 `node tools/spec-review/validate.js` checks every task under the configured roots
 alongside the specs: task.yaml structure, duplicate or reserved keys, items that do
-not parse, duplicate ids, unknown content types, model verdicts that are not label
+not parse, duplicate ids, unknown content types, malformed proposal content, model verdicts that are not label
 ids, media paths outside `media/`, unparseable label rows, and wave files that do not
 parse, skip a number, or put an item in two waves.
 

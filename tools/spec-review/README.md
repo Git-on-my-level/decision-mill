@@ -107,7 +107,9 @@ All of them are read and normalized in one place, [`lib/config.js`](lib/config.j
   item has media (timestamps seek it), the model-written summary collapsed with a
   caveat, and the neighboring items, each expandable — so nobody judges a snippet.
   Meta chips show only `meta_display` keys, formatted (never a raw timestamp), and
-  drop what the title already says.
+  drop what the title already says. A `proposal` item (a proposed edit to judge)
+  shows the change as an inline diff first, then the evidence with the old and new
+  values marked, then the policy folded to one line (see LABELS.md).
 - Built for long sittings: one slim sticky bar (round or wave, `done/total`, one dot
   per card, pace and session time, an Instructions button), and a sticky verdict bar
   at the bottom of the viewport with the keys on every button. Press a label's key

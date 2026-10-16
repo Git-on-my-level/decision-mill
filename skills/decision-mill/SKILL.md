@@ -33,7 +33,11 @@ Rules that matter (each came from a real labeling session):
    `speaker`, `is_user`, `start`, `text`), the app `summary`, and `context[]`
    neighbors (before/after/overlapping, with their own summary or segments). If an
    item must be cut, set `truncated: true`. Add `media[]` audio when the question
-   depends on what was actually said.
+   depends on what was actually said. When the reviewer judges a **proposed edit**
+   (should a verifier accept this change?), use `content.type: proposal`: `change`
+   with `before`/`after` (or `fields`), `evidence[]` records with human titles and
+   `cited` segments, `highlight`, and `policy` with `policy_focus`. The card shows an
+   inline diff first; never paste the edit and its evidence as JSON in markdown.
 3. **Fewer labels: waves.** When a model stand-in can plausibly infer the human's
    labels, set `waves: {count: 3, size: 20}` (see "Waves" below) instead of rounds.
    Otherwise use **rounds of 20–50, stratified across the model score range.** Set `round_size`
