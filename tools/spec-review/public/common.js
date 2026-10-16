@@ -32,6 +32,23 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// The href for an outbound link, or null: only absolute http(s) URLs become links
+// (never javascript:, data:, relative paths). Browser twin of lib/url.js httpUrl.
+function httpHref(v) {
+  if (typeof v !== "string" || !v.trim()) return null;
+  try {
+    const u = new URL(v.trim());
+    return u.protocol === "http:" || u.protocol === "https:" ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+// An anchor that opens outside the app, in a new tab, without an opener.
+function extLink(href, attrs, ...kids) {
+  return el("a", { ...attrs, href, target: "_blank", rel: "noopener noreferrer" }, ...kids);
+}
+
 function md(text) {
   if (!text) return "";
   // Never let a missing/broken markdown vendor blank the whole page.

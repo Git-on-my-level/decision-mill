@@ -10,6 +10,7 @@ import path from "node:path";
 import * as yaml from "js-yaml";
 import { normalizeWaves } from "./waves.js";
 import { proposalProblems } from "./proposal.js";
+import { httpUrl, shown } from "./url.js";
 
 export const CONTENT_TYPES = new Set(["transcript", "markdown", "text", "proposal", "speaker_group"]);
 export const FIELD_TYPES = new Set(["checkbox", "choice", "text"]);
@@ -153,6 +154,8 @@ export function parseItems(text, task) {
     else if (c.type === "transcript" && !Array.isArray(c.segments)) warnings.push(`${it.id}: transcript content needs a segments list`);
     else if (c.type === "proposal") for (const p of proposalProblems(c)) warnings.push(`${it.id}: ${p}`);
     else if (!["transcript", "speaker_group"].includes(c.type) && typeof c.body !== "string") warnings.push(`${it.id}: ${c.type} content needs a body string`);
+    // A permalink to the item's source, shown as a link on the card: http(s) only.
+    if (it.url != null && !httpUrl(it.url)) warnings.push(`${it.id}: url must be an http(s) URL (got '${shown(it.url)}'); it will not be shown as a link`);
     if (it.hidden != null && (typeof it.hidden !== "object" || Array.isArray(it.hidden))) warnings.push(`${it.id}: hidden must be a mapping`);
     if (it.context != null && !Array.isArray(it.context)) warnings.push(`${it.id}: context must be a list`);
     if (it.media != null && !Array.isArray(it.media)) warnings.push(`${it.id}: media must be a list`);

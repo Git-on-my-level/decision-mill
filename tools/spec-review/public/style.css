@@ -361,6 +361,10 @@ kbd { font: 11px var(--mono); border: 1px solid var(--line); border-bottom-width
 .lc-meta .chip.round { color: var(--ink); border-color: var(--muted); }
 .lc-meta .chip.warn { color: var(--metric); }
 .lc-title { font-size: 17px; font-weight: 640; letter-spacing: -.005em; }
+.lc-head { display: flex; align-items: baseline; gap: 4px 12px; }
+.lc-head .lc-title { flex: 1; min-width: 0; }
+.lc-source { margin-left: auto; flex: none; font-size: 12px; color: var(--muted); text-decoration: none; white-space: nowrap; }
+.lc-source:hover, .lc-source:focus-visible { color: var(--ink); text-decoration: underline; }
 .lc-content { margin-top: 12px; }
 /* The page scrolls, not the transcript: no nested scroll box on a long item. */
 .transcript { display: flex; flex-direction: column; gap: 2px; }
@@ -560,6 +564,9 @@ mark.cmp { color: inherit; font-weight: 640; background: color-mix(in srgb, var(
 .pp-ev { border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px 8px; }
 .pp-ev-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin-bottom: 6px; }
 .pp-ev-title { font-weight: 640; font-size: 14px; }
+a.pp-ev-link { text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
+a.pp-ev-link:hover, a.pp-ev-link:focus-visible { text-decoration-color: currentColor; }
+a.pp-ev-link .ext { color: var(--muted); font-weight: 400; font-size: 12px; }
 .pp-tag { font: 600 10.5px var(--mono); color: var(--unify); border: 1px solid color-mix(in srgb, var(--unify) 45%, var(--line)); border-radius: 99px; padding: 0 7px; }
 .pp-facts { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 7px; font-size: 13px; }
 .pp-facts > div { display: flex; gap: 6px; min-width: 0; }
