@@ -144,8 +144,12 @@ function refreshTaskRow() {
 function renderLabel(body) {
   const t = L.task;
   if (t.instructions) {
-    const d = el("details", { class: "instructions", id: "instr", open: L.instrOpen },
-      el("summary", {}, "Instructions", el("span", { class: "hint" }, " — i to show or hide")), el("div", { class: "prose", html: md(t.instructions) }));
+    // Opened automatically on a first visit, the instructions are clamped to a
+    // few lines on a phone so the first card still shows; a tap reads them all.
+    const prose = el("div", { class: "prose", html: md(t.instructions) });
+    const d = el("details", { class: `instructions${L.instrAuto ? " auto" : ""}`, id: "instr", open: L.instrOpen },
+      el("summary", {}, "Instructions", el("span", { class: "hint" }, " — i to show or hide")), prose);
+    prose.addEventListener("click", () => d.classList.remove("auto"));
     d.addEventListener("toggle", () => {
       if (d.open === L.instrOpen) return;
       L.instrOpen = d.open; L.instrAuto = false;
@@ -306,7 +310,7 @@ function speakerName(seg) {
   return m ? `Speaker ${Number(m[1])}` : String(seg.speaker || "Speaker");
 }
 
-function transcriptEl(segments, audioRef) {
+function transcriptEl(segments, audioRef, opts = {}) {
   const box = el("div", { class: "transcript" });
   let prev = null;
   for (const s of segments || []) {
@@ -319,7 +323,7 @@ function transcriptEl(segments, audioRef) {
     }, fmtClock(s.start)) : null;
     box.append(el("div", { class: `seg${s.is_user ? " me" : ""}${same ? " cont" : ""}` },
       same ? null : el("div", { class: "seg-head" }, el("span", { class: "seg-who" }, who), time),
-      el("div", { class: "seg-text" }, s.text, same && time ? time : null)));
+      el("div", { class: "seg-text" }, opts.mark ? opts.mark(s.text) : s.text, same && time ? time : null)));
     prev = who;
   }
   if (!box.childNodes.length) box.append(el("div", { class: "seg empty-seg" }, "(empty transcript)"));
@@ -330,7 +334,187 @@ function contentEl(c, audioRef) {
   if (!c) return el("div", { class: "empty-seg" }, "(no content)");
   if (c.type === "transcript") return transcriptEl(c.segments, audioRef);
   if (c.type === "markdown") return el("div", { class: "prose doc", html: md(c.body) });
+  if (c.type === "proposal") return proposalEl(c);
   return el("div", { class: "plain doc" }, String(c.body ?? ""));
+}
+
+/* ---------- proposal: a proposed change, its evidence, the rules ---------- */
+// Order on the card is fixed: the change (as an inline diff) first, so it is
+// above the fold; then the evidence with the changed values marked; then the
+// policy, folded to one line. The question lives in the verdict bar.
+const PD = () => globalThis.ProposalDiff;
+
+function runsEl(runs) {
+  return runs.map((r) => r.op === "del" ? el("del", { class: "d" }, r.text)
+    : r.op === "ins" ? el("ins", { class: "i" }, r.text) : r.text);
+}
+const emptyEl = (text) => el("span", { class: "pp-empty" }, text);
+
+// One value replaced by another, as two readable sides. A mostly-rewritten value
+// is shown whole (old struck, new underlined) — an inline diff of it is noise.
+function diffSides(before, after) {
+  const D = PD();
+  const b = D.display(before), a = D.display(after);
+  if (b == null || a == null) return { before: b == null ? null : [{ op: "del", text: b }], after: a == null ? null : [{ op: "ins", text: a }], runs: null };
+  const runs = D.diffWords(b, a);
+  if (D.keptShare(runs, b, a) < 0.3) return { before: [{ op: "del", text: b }], after: [{ op: "ins", text: a }], runs: null };
+  return { ...D.sides(runs), runs };
+}
+
+// "Mirex[ah→u]" for a one-word spelling change, else null.
+function spellingChip(runs) {
+  const chg = (runs || []).filter((r) => r.op !== "eq");
+  if (chg.length !== 1 || chg[0].op !== "chg") return null;
+  const parts = chg[0].parts;
+  const out = [];
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p.op === "eq") { out.push(p.text); continue; }
+    const del = p.op === "del" ? p.text : "";
+    const ins = p.op === "ins" ? p.text : parts[i + 1]?.op === "ins" ? parts[++i].text : "";
+    out.push(el("span", { class: "sp-br" }, "[", del ? el("del", { class: "d" }, del) : "∅", "→", ins ? el("ins", { class: "i" }, ins) : "∅", "]"));
+  }
+  return el("span", { class: "pp-spell", title: "letters changed" }, out);
+}
+
+function changeLine(ch) {
+  const has = "before" in ch || "after" in ch;
+  if (!has) return null;
+  const D = PD();
+  const { before, after, runs } = diffSides(ch.before, ch.after);
+  const len = (D.display(ch.before) || "").length + (D.display(ch.after) || "").length;
+  // Long values read better as one unified sentence with the edits inline.
+  if (runs && len > 110) {
+    return el("div", { class: "pp-line long" }, ch.kind ? el("span", { class: "pp-kind" }, ch.kind) : null,
+      el("span", { class: "pp-unified" }, runsEl(runs.flatMap((r) => r.op === "chg" ? [{ op: "del", text: r.from }, { op: "ins", text: r.text }] : [r]))));
+  }
+  return el("div", { class: `pp-line${len > 70 ? " wrap" : ""}` },
+    ch.kind ? el("span", { class: "pp-kind" }, ch.kind) : null,
+    el("span", { class: "pp-before" }, before ? runsEl(before) : emptyEl("(new)")),
+    el("span", { class: "pp-arrow", "aria-label": "becomes" }, "→"),
+    el("span", { class: "pp-after" }, after ? runsEl(after) : emptyEl("(removed)")),
+    spellingChip(runs));
+}
+
+// Fields side by side. Differing rows come first; the rows that match collapse
+// into one "same on both" line so the differences stand out. With
+// `compare: true` the two columns are two records, not old → new: differences
+// are marked on both sides instead of struck and underlined.
+function fieldsTable(ch) {
+  const fields = Array.isArray(ch.fields) ? ch.fields : [];
+  if (!fields.length) return null;
+  const D = PD();
+  const compare = ch.compare === true;
+  const cellRuns = (runs) => runs.map((r) => r.op === "eq" ? r.text : compare ? el("mark", { class: "cmp" }, r.text) : runsEl([r]));
+  const cell = (side, v) => side ? cellRuns(side) : emptyEl(compare ? "— missing" : D.display(v) == null ? "—" : "");
+  const diff = fields.filter((f) => !D.sameValue(f.before, f.after));
+  const same = fields.filter((f) => D.sameValue(f.before, f.after));
+  const sameText = (f) => { const v = D.display(f.before); return v == null ? "none" : v.length > 60 ? `${v.slice(0, 57)}…` : v; };
+  return el("table", { class: `pp-fields${compare ? " compare" : ""}` },
+    el("thead", {}, el("tr", {}, el("th", {}, ""), el("th", {}, ch.before_label || "Before"), el("th", {}, ch.after_label || "After"))),
+    el("tbody", {},
+      diff.map((f) => {
+        const { before, after } = diffSides(f.before, f.after);
+        return el("tr", { class: "diff" }, el("th", {}, f.name), el("td", {}, cell(before, f.before)), el("td", {}, cell(after, f.after)));
+      }),
+      same.length ? el("tr", { class: "same" },
+        el("td", { colspan: "3" }, el("span", { class: "same-h" }, "Same on both: "), same.map((f, i) => el("span", { class: "same-f", title: D.display(f.before) || "" },
+          el("span", { class: "same-k" }, f.name), " ", sameText(f), i < same.length - 1 ? " · " : "")))) : null));
+}
+
+function rawEl(raw, label = "raw") {
+  if (raw == null) return null;
+  return el("details", { class: "pp-raw" }, el("summary", {}, label),
+    el("pre", {}, typeof raw === "string" ? raw : JSON.stringify(raw, null, 2)));
+}
+
+// Highlight terms: explicit `highlight`, else the change's before/after values.
+// Each term knows its side so the evidence marks match the diff colors.
+function highlightTerms(c) {
+  const D = PD();
+  const b = D.display(c.change?.before), a = D.display(c.change?.after);
+  const side = (t) => (t === b ? "before" : t === a ? "after" : "term");
+  const list = Array.isArray(c.highlight) ? c.highlight : [b, a].filter(Boolean);
+  return list.map((h) => typeof h === "string" ? { text: h, side: side(h) } : { text: String(h?.text ?? ""), side: h?.side || side(h?.text) })
+    .filter((h) => h.text.trim().length >= 2);
+}
+function marker(terms) {
+  if (!terms.length) return null;
+  return (text) => {
+    const s = String(text ?? "");
+    const out = [];
+    let at = 0;
+    for (const r of PD().highlightRanges(s, terms)) {
+      if (r.start > at) out.push(s.slice(at, r.start));
+      const side = terms[r.index].side;
+      out.push(el("mark", { class: `hl hl-${side}`, title: side === "term" ? null : `the ${side === "before" ? "old" : "new"} value` }, s.slice(r.start, r.end)));
+      at = r.end;
+    }
+    if (at < s.length) out.push(s.slice(at));
+    return out;
+  };
+}
+
+function factsEl(facts, mark) {
+  const list = Array.isArray(facts) ? facts : facts && typeof facts === "object" ? Object.entries(facts).map(([name, value]) => ({ name, value })) : [];
+  if (!list.length) return null;
+  return el("dl", { class: "pp-facts" }, list.map((f) => {
+    const v = PD().display(f.value);
+    return el("div", {}, el("dt", {}, f.name), el("dd", {}, v == null ? emptyEl("— missing") : mark ? mark(v) : v));
+  }));
+}
+
+function evidenceEl(e, mark) {
+  const segs = Array.isArray(e.segments) ? e.segments : [];
+  const cited = Array.isArray(e.cited) ? new Set(e.cited) : null;
+  const shown = cited ? segs.filter((s) => cited.has(s?.id)) : segs;
+  const rest = cited ? segs.filter((s) => !cited.has(s?.id)) : [];
+  return el("div", { class: "pp-ev" },
+    el("div", { class: "pp-ev-head" },
+      el("span", { class: "pp-ev-title" }, e.title || "(untitled)"),
+      e.tag ? el("span", { class: "pp-tag" }, e.tag) : null),
+    factsEl(e.facts, mark),
+    e.text ? el("p", { class: "pp-ev-text" }, mark ? mark(e.text) : e.text) : null,
+    shown.length ? el("div", { class: "pp-cited" }, rest.length ? el("div", { class: "pp-cited-label" }, "Cited") : null, transcriptEl(shown, null, { mark })) : null,
+    rest.length ? el("details", { class: "pp-more" }, el("summary", {}, `Rest of the transcript · ${rest.length} segment${rest.length === 1 ? "" : "s"}`), transcriptEl(rest, null, { mark })) : null,
+    el("div", { class: "pp-ev-foot" }, e.ref ? el("span", { class: "pp-ref" }, e.ref) : null, rawEl(e.raw)));
+}
+
+function policyEl(c) {
+  const rules = PD().splitSentences(c.policy);
+  if (!rules.length) return null;
+  const focus = (Array.isArray(c.policy_focus) ? c.policy_focus : []).map((f) => String(f).toLowerCase().trim()).filter(Boolean);
+  const isFocus = (r) => focus.some((f) => r.toLowerCase().includes(f) || f.includes(r.toLowerCase()));
+  const focused = rules.filter(isFocus);
+  const pinned = focused.length ? el("ul", { class: "pp-focus" }, focused.map((r) => el("li", {}, r))) : null;
+  const det = el("details", { class: "pp-policy-all" },
+    el("summary", {}, `Policy (${rules.length} rule${rules.length === 1 ? "" : "s"})`,
+      el("span", { class: "hint" }, focused.length ? ` — ${focused.length} most relevant shown; open for all` : " — open to read")),
+    el("ul", {}, rules.map((r) => el("li", { class: isFocus(r) ? "focus" : null }, r))));
+  det.addEventListener("toggle", () => { if (pinned) pinned.hidden = det.open; });
+  return el("section", { class: "pp-policy" }, det, pinned);
+}
+
+function proposalEl(c) {
+  const ch = c.change && typeof c.change === "object" ? c.change : {};
+  const terms = highlightTerms(c);
+  const mark = marker(terms);
+  const evidence = Array.isArray(c.evidence) ? c.evidence : [];
+  return el("div", { class: "proposal" },
+    el("section", { class: "pp-change", "aria-label": "Proposed change" },
+      el("div", { class: "pp-h" }, "Proposed change"),
+      ch.summary ? el("div", { class: "pp-summary" }, ch.kind && !("before" in ch || "after" in ch) ? el("span", { class: "pp-kind" }, ch.kind) : null, ch.summary) : null,
+      changeLine(ch),
+      Array.isArray(ch.notes) && ch.notes.length ? el("ul", { class: "pp-notes" }, ch.notes.map((n) => el("li", {}, String(n)))) : null,
+      fieldsTable(ch),
+      ch.target || ch.raw != null ? el("div", { class: "pp-ev-foot" }, ch.target ? el("span", { class: "pp-ref" }, ch.target) : null, rawEl(ch.raw, "raw proposal")) : null),
+    evidence.length ? el("section", { class: "pp-evidence", "aria-label": "Evidence" },
+      el("div", { class: "pp-h" }, `Evidence · ${evidence.length} record${evidence.length === 1 ? "" : "s"}`,
+        terms.some((t) => t.side !== "term") ? el("span", { class: "pp-legend" },
+          terms.some((t) => t.side === "before") ? el("mark", { class: "hl hl-before" }, "old value") : null,
+          terms.some((t) => t.side === "after") ? el("mark", { class: "hl hl-after" }, "new value") : null) : null),
+      evidence.map((e) => evidenceEl(e || {}, mark))) : null,
+    policyEl(c));
 }
 
 function relationText(c) {
@@ -435,6 +619,10 @@ function cardEl(entry) {
     revealEl(item, entry.state?.label ?? null));
 }
 
+// An item may carry its own wording of the question (proposal content); it
+// replaces the task's in the verdict bar so the question appears once.
+const question = (item) => (item?.content?.type === "proposal" && typeof item.content.question === "string" && item.content.question.trim()) || L.task.question;
+
 // The verdict bar: sticky at the bottom of the viewport while the card is on
 // screen, so a verdict never needs a scroll. Keys are on every button.
 function actionBar(entry) {
@@ -474,7 +662,7 @@ function actionBar(entry) {
     : el("span", { class: "unsaved" }, `${L.pos + 1} of ${ids.length}`);
   const skipKey = taskKeys().has("s") ? "j" : "s";
   return el("section", { class: "actionbar", "aria-label": "Your verdict" },
-    t.question ? el("div", { class: "ab-q" }, t.question) : null,
+    question(item) ? el("div", { class: "ab-q" }, question(item)) : null,
     choices,
     el("div", { class: "ab-row" },
       fieldEls,
