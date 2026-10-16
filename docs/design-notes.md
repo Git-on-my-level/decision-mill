@@ -150,3 +150,20 @@ viewport at its top; one slim sticky bar holds round/wave, count, dots and pace;
 verdict buttons live in a sticky bottom bar; the transcript no longer scrolls inside
 its own box; meta chips are formatted and de-duplicated against the title
 (`meta_display`); `s` skips for now and `u` undoes from anywhere.
+
+## Spec-set vocabularies and waiting (2026-10-16 feedback)
+
+A feature-flag review run in spec mode needed verdicts the defaults did not have
+(graduate / kill / extend), and its cards were neither divergences nor features.
+→ A per-set `decision-mill.yaml` declares the buttons (stored value = button id, keys
+in declared order, `requires_detail` enforced in the UI, the server and the strict
+gate) and an instructions panel; a generic `DEC` kind covers register entries.
+
+The orchestrating agent polled the server to learn when the human had finished.
+→ Long-poll endpoints plus `wait.js` and `labels.js wait`, which exit 0 / 2 / 1 so
+they run as background waiters that end on every terminal state.
+
+Smaller findings from the same sessions: evidence spanned two repositories (one
+locator prefix was not enough → `LOCATOR_ROOTS`); a task kept its `pending:` flag
+after items landed; and three spec files all used the same `<CAP>` code, making ids
+ambiguous references.

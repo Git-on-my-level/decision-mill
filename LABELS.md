@@ -68,7 +68,7 @@ models:                            # how Results compares each model with the hu
 | `round_size`, `stratify` | See [Rounds](#rounds). Ignored when `waves` is set. |
 | `meta_display` | Which `item.meta` keys the card shows, in order. Default `[started_at, duration_s, word_count, source]`; other keys stay hidden. Timestamps (`*_at`, any ISO string) are shown as dates, `*_s` as durations, `word_count` as "N words"; a chip whose content the title already shows is dropped. |
 | `waves` | Label in a few frozen waves, with a model stand-in inferring the rest. See [Waves](#waves). |
-| `pending` | Markdown shown in place of the card while `items.jsonl` is empty or missing. An empty task is a normal **waiting for items** state, never an error; say who runs what to fill it. |
+| `pending` | Markdown shown in place of the card while `items.jsonl` is empty or missing. An empty task is a normal **waiting for items** state, never an error; say who runs what to fill it. Once items exist the note is ignored (`/api/tasks` reports `pending: false`) and `validate.js` warns until you remove it. |
 | `models[].score_path`, `verdict_path` | Dotted paths into each item (usually under `hidden`). Verdicts must use label ids. |
 | `models[].positive_label` | Required for the threshold curve unless it can be inferred (the model's most common verdict at or above its threshold). Set it explicitly. |
 
@@ -284,7 +284,25 @@ node labels.js infer-prompt <task> --out /tmp/brief.md  # the human's labels + n
 node labels.js import-standin <task> standin.jsonl --model <model-id>
 node labels.js next-wave <task> --dry-run                # check strata and reasons
 node labels.js next-wave <task>                          # freeze it; the UI picks it up within 15 s
+node labels.js wait <task> --url http://127.0.0.1:<port> --until wave-ready --timeout 3h   # sleep until the human finishes it
 ```
+
+Do not poll for the human. `labels.js wait` blocks until a condition holds and exits
+**0** when it does, **2** on timeout and **1** on any error (server unreachable, unknown
+task, or a condition the task can never meet, such as `wave-ready` on a rounds task),
+so it works as a background waiter:
+
+| `--until` | Holds when |
+| --------- | ---------- |
+| `wave-ready` | the human has labeled every frozen wave: state `inferring` (your turn) or `done` |
+| `round-done` | the round or wave that was current when the wait began is fully labeled |
+| `labeled:N` (or `'labeled>=N'`, quoted) | the human has labeled at least N items |
+| `done` | every round, or every planned wave, is labeled |
+| `change` | any new label row or frozen wave |
+
+With `--url` it long-polls the server (`GET /api/task/<id>/wait`); without, it watches
+the task files directly. `--reviewer` names the human; by default it is the reviewer
+with the most human labels.
 
 The brief never contains model answers or strata (the stand-in judges what the human
 saw) and lists the stand-in's earlier predictions the human overruled.
@@ -344,6 +362,7 @@ per-file queue serializes them with the reviewer's clicks):
 | `POST /api/task/<id>/labels` | Batch of stand-in rows: `{"reviewer": "opus-standin", "labels": [{"item_id", "label", "fields"?, "note"?, "confidence"?, "rationale"?}]}`. Always `model-standin`; all-or-nothing validation. |
 | `POST /api/task/<id>/label` | One row (what the UI sends). With `"source": "model-standin"` and a `reviewer`, a single stand-in row. |
 | `POST /api/task/<id>/undo` | `{"item_id"}` → appends `"label": null`. |
+| `GET /api/task/<id>/wait?until=…&timeout=<s>[&since=<etag>&round=<n>&reviewer=]` | Long-poll: answers `{"status": "satisfied"}` as soon as the condition holds, or `{"status": "timeout"}` after `timeout` seconds (default 60, max 900), with the task's progress, `etag` and `baseline`. Pass both back on the next request to chain waits without missing a change. 409 for a condition the task can never meet. |
 
 Writes must be `content-type: application/json`.
 
