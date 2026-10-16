@@ -150,6 +150,7 @@ locator_roots:           # extra schemes for this set; paths relative to this fi
 | `key` | Keyboard shortcut. Missing keys get the next free digit **in declared order**. `j k u e i ? /` are spec mode's and refused. |
 | `tone` | `positive` / `negative` / `neutral` — button and stamp color (defaults: `keep` positive, `change` negative, others neutral). |
 | `requires_detail` | The UI refuses the click until the item's text box has a reason, the server answers 400 to a bare write, and `validate.js` warns on a stored one (an error under `--strict`). |
+| `custom` | The verdict a **typed answer** records: the reviewer types in the item's text box and presses ⌘/Ctrl+Enter (or **Answer**), and that text becomes the verdict's detail. At most one. Without it a typed answer records `change`, else the first `requires_detail` verdict; a set with neither treats typed text as a note only. |
 | `kinds` | Only offer this verdict on items of these kinds. |
 | `{id: unify}` | The Unify-on… flow (stores `unify-on-<target>`), divergences only. Leave it out and no unify button appears. |
 

@@ -57,7 +57,7 @@ export function normalizeDecisions(raw) {
     if (id.startsWith("unify-on-")) { errors.push(`decision id '${id}': declare {id: unify} for the unify-on-<target> flow`); continue; }
     if (out.some((x) => x.id === id)) { errors.push(`duplicate decision id '${id}'`); continue; }
     for (const k of Object.keys(entry)) {
-      if (!["id", "label", "hint", "key", "requires_detail", "tone", "kinds"].includes(k)) warnings.push(`decision '${id}': unknown key '${k}'`);
+      if (!["id", "label", "hint", "key", "requires_detail", "tone", "kinds", "custom"].includes(k)) warnings.push(`decision '${id}': unknown key '${k}'`);
     }
     const tone = entry.tone == null ? DEFAULT_TONE[id] || "neutral" : String(entry.tone);
     if (!TONES.has(tone)) warnings.push(`decision '${id}': unknown tone '${tone}' (want positive|negative|neutral)`);
@@ -73,10 +73,14 @@ export function normalizeDecisions(raw) {
       key: entry.key != null && String(entry.key) !== "" ? String(entry.key).toLowerCase() : null,
       tone: TONES.has(tone) ? tone : "neutral",
       requires_detail: entry.requires_detail === true,
+      custom: entry.custom === true,
       kinds,
     });
     if (entry.requires_detail != null && typeof entry.requires_detail !== "boolean") warnings.push(`decision '${id}': requires_detail must be true or false`);
+    if (entry.custom != null && typeof entry.custom !== "boolean") warnings.push(`decision '${id}': custom must be true or false`);
+    if (entry.custom === true && id === "unify") errors.push("decision 'unify' cannot be custom (it needs a target)");
   }
+  if (out.filter((d) => d.custom).length > 1) errors.push("only one decision can be custom: true (the one a typed answer records)");
   // Keys follow the declared order: a missing key gets the next free digit. The
   // unify flow only gets a key when one is declared, as in the default set.
   const used = new Set();
@@ -92,6 +96,14 @@ export function normalizeDecisions(raw) {
     for (let n = 1; n <= 9; n++) if (!used.has(String(n))) { d.key = String(n); used.add(d.key); break; }
   }
   return { decisions: out.length ? out : null, errors, warnings };
+}
+
+// The decision a typed answer records (text + ⌘/Ctrl+Enter, or the Answer button):
+// the one marked `custom: true`, else `change`, else the first requires_detail one.
+// null means the set has no free-text verdict, and typed text is only a note.
+export function answerDecision(decisions) {
+  const list = (decisions || []).filter((d) => d.id !== "unify");
+  return (list.find((d) => d.custom) || list.find((d) => d.id === "change") || list.find((d) => d.requires_detail) || null)?.id || null;
 }
 
 // Read `<dir>/decision-mill.yaml`. Never throws: problems come back as errors so

@@ -38,6 +38,19 @@ const DEFAULT_DECISIONS = [
   { id: "unify", label: "Unify on…", key: null, tone: "unify", hint: "the rewrite adopts one target's behavior on every surface", kinds: ["divergence"] },
 ];
 const decisions = () => (state.cfg && state.cfg.decisions) || DEFAULT_DECISIONS;
+// The text box is an answer box: typed text + ⌘/Ctrl+Enter is a verdict, the
+// verdict keys take the text along as the reason, and a note is the explicit extra.
+function answerPlaceholder(isGeneral) {
+  const a = answerDef();
+  if (isGeneral || !a) return "note — ⌘/Ctrl+Enter saves it";
+  const keyed = decisions().filter((d) => d.key && d.id !== "unify").map((d) => `${d.key} ${d.label}`).join(" · ");
+  return `Your answer — type it and press ⌘/Ctrl+Enter (records ${a.label} with this text). Or pick ${keyed}; the text rides along as the reason.`;
+}
+// The verdict a typed answer records (mirrors lib/specset.js answerDecision).
+function answerDef() {
+  const list = decisions().filter((d) => d.id !== "unify");
+  return list.find((d) => d.custom) || list.find((d) => d.id === "change") || list.find((d) => d.requires_detail) || null;
+}
 const TONE_BTN = { positive: "b-keep", negative: "b-toss", neutral: "ghost", unify: "b-unify" };
 const TONE_CLS = { positive: "keep", negative: "toss", neutral: "defer", unify: "unify" };
 // Does decision `d` apply to item `it`? Unify only ever applies to divergences.
@@ -521,8 +534,9 @@ function renderItem(it) {
       <div class="notes">
         ${notes}
         <div class="note-add">
-          <textarea placeholder="note / decision rationale — saved with your next decision, or Add note to save it alone (⌘/Ctrl+Enter)" spellcheck="false"></textarea>
-          <button class="btn" data-note type="button">Add note</button>
+          <textarea placeholder="${esc(answerPlaceholder(isGeneral))}" spellcheck="false"></textarea>
+          ${!isGeneral && answerDef() ? `<button class="btn b-answer" data-answer type="button" title="record the typed text as your answer (${esc(answerDef().label)}) — ⌘/Ctrl+Enter">Answer <kbd>⌘↵</kbd></button>` : ""}
+          <button class="btn ghost note-only" data-note type="button" title="save the text as a note without deciding${!isGeneral && answerDef() ? " — Shift+⌘/Ctrl+Enter" : " — ⌘/Ctrl+Enter"}">${!isGeneral && answerDef() ? "Note only" : "Add note"}</button>
         </div>
       </div>
     </div>`;
@@ -553,6 +567,7 @@ function renderItem(it) {
 
   /* ---- notes / rationale: the item's one and only text field ---- */
   const ta = el.querySelector(".note-add textarea");
+  const isGeneralItem = !DECIDABLE(it);
   const noteBtn = el.querySelector("[data-note]");
   if (state.drafts[it.id]) ta.value = state.drafts[it.id];
   ta.addEventListener("input", () => { state.drafts[it.id] = ta.value; });
@@ -698,8 +713,25 @@ function renderItem(it) {
     }
   };
   noteBtn.addEventListener("click", (e) => { e.stopPropagation(); addNote(); });
+
+  /* ---- typed answer: the text itself is the verdict's detail ---- */
+  const answerBtn = el.querySelector("[data-answer]");
+  const answer = () => {
+    const a = answerDef();
+    if (!a || isGeneralItem) return addNote();
+    if (!ta.value.trim()) {
+      showHint("Type your answer first, or press a verdict key.");
+      ta.focus();
+      return;
+    }
+    closeUnify();
+    decide(a.id, takeText());
+  };
+  if (answerBtn) answerBtn.addEventListener("click", (e) => { e.stopPropagation(); answer(); });
   ta.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); addNote(); }
+    if (e.key !== "Enter" || !(e.metaKey || e.ctrlKey)) return;
+    e.preventDefault();
+    if (e.shiftKey || !answerBtn) addNote(); else answer();
   });
   return el;
 }
@@ -843,7 +875,8 @@ function buildSpecHelp() {
     ["e", "open the focused item's first citation"],
     ...(state.cfg && (state.cfg.instructions || state.cfg.customDecisions) ? [["i", "show or hide the instructions and verdict legend"]] : []),
     ["Esc", "close the unify input or the code panel; leave a text box"],
-    ["⌘/Ctrl+Enter", "add the textarea's note without deciding"],
+    ["⌘/Ctrl+Enter", "in the text box: record the typed text as your answer (the set's custom verdict)"],
+    ["Shift+⌘/Ctrl+Enter", "in the text box: save the text as a note without deciding"],
   ];
 }
 buildSpecHelp();

@@ -250,3 +250,14 @@ test("HTTP: duplicate CAP codes appear in the spec header warnings", async () =>
     assert.ok(!v.body.results.find((x) => x.slug === "copy").warnings.some((w) => /CAP code/.test(w)));
   } finally { await srv.stop(); fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test("answerDecision: custom flag, else change, else first requires_detail", async () => {
+  const { normalizeDecisions, answerDecision } = await import("../lib/specset.js");
+  const pick = (raw) => answerDecision(normalizeDecisions(raw).decisions);
+  assert.equal(pick([{ id: "accept" }, { id: "change" }, { id: "defer" }]), "change");
+  assert.equal(pick([{ id: "accept" }, { id: "other", custom: true }, { id: "change" }]), "other");
+  assert.equal(pick([{ id: "accept" }, { id: "extend", requires_detail: true }]), "extend");
+  assert.equal(pick([{ id: "accept" }, { id: "defer" }]), null);
+  const two = normalizeDecisions([{ id: "a", custom: true }, { id: "b", custom: true }]);
+  assert.ok(two.errors.some((e) => /only one decision can be custom/.test(e)));
+});

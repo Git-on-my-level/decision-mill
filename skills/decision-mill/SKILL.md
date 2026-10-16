@@ -97,7 +97,10 @@ decisions:                 # replaces Keep/Change/Defer/Unify; keys 1..9 in this
   - {id: defer}                    # defer keeps the item open
 ```
 
-The stored `decision` is the button id. Validate with `node tools/spec-review/validate.js
+The stored `decision` is the button id. The item's text box is an answer box: typing
+there and pressing ⌘/Ctrl+Enter records the `custom: true` verdict (default `change`)
+with the text as its detail; the verdict keys take the text along as the reason, and
+Shift+⌘/Ctrl+Enter saves a plain note. Tell the reviewer this. Validate with `node tools/spec-review/validate.js
 --locators` (it also checks the yaml and warns on a `<CAP>` code reused across files).
 
 ## Waiting for the human (never poll)

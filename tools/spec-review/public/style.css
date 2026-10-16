@@ -734,3 +734,12 @@ mark.hl-term { background: color-mix(in srgb, var(--metric) 22%, transparent); b
 .sp-mixed-bar { justify-content: space-between; }
 .pending-task { text-align: left; max-width: 640px; margin: 0 auto; }
 .pending-task h3 { color: var(--fg, inherit); margin: 0 0 8px; }
+/* the text box is an answer box: Answer is the primary action, a note the extra */
+.note-add .b-answer { border-color: var(--keep); color: var(--keep); white-space: nowrap; }
+.note-add .b-answer kbd { margin-left: 5px; font-size: 10.5px; opacity: .7; }
+.note-add .note-only { font-size: 11.5px; padding: 5px 9px; white-space: nowrap; }
+/* long locators stay on one line where they fit; the note wraps under them instead
+   of squeezing the path into a narrow, mid-word-broken column */
+.ev { flex-wrap: wrap; column-gap: 10px; row-gap: 1px; }
+.ev .loc { flex: 0 1 auto; overflow-wrap: anywhere; }
+.ev .note { flex: 1 1 22em; }
