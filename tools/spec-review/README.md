@@ -24,7 +24,9 @@ node server.js    # bun server.js also works
 ```
 
 With no configuration it serves the repository's `specs/` directory (falling back to
-the bundled `examples/specs/`) and the bundled `examples/labels/` demo task.
+the bundled `examples/specs/` and `examples/decision-register/`) and the bundled
+`examples/labels/` demo tasks. The startup banner lists every spec set (with its
+`decision-mill.yaml` vocabulary), every locator root, and a direct URL per set and task.
 
 ```sh
 node server.js --labels ~/.local/share/labels --port 4610          # label mode only
@@ -41,12 +43,17 @@ SPECS_DIR=/path/a/specs,/path/b/specs PORT=4601 node server.js     # two spec se
 | `LABELS_ROOT` | `--labels` | `<repo>/examples/labels` if nothing else is configured | Label-task roots (comma-separated, or repeat the flag). |
 | `LOCATOR_PREFIX` | | `repo` | Evidence-locator scheme (`repo:src/foo.ts`). |
 | `REPO_ROOT` | | the repo containing this tool | Checkout that locators resolve against. |
+| `LOCATOR_ROOTS` | | *(empty)* | Several schemes: `acme=/src/acme,kb=/src/kb` (first = primary). Env roots win over a set's `locator_roots`. |
 | `PROJECT_NAME` | | *(empty)* | Sidebar subtitle. |
 | `REVIEWER` | `--reviewer` | `reviewer` | Attribution in spec `notes[].by` and the label file name. Unset: the `Tailscale-User-Login` header names the reviewer. |
 | `SPECS_EXCLUDE` | | `README.md,FORMAT.md` | Files in `SPECS_DIR` that are docs, not specs. |
 | `DELEGATED_PATHS` | | *(empty)* | Path prefixes owned by another team; see `validate.js`. |
 
 All of them are read and normalized in one place, [`lib/config.js`](lib/config.js).
+
+A specs directory may also hold a `decision-mill.yaml` (instructions, verdict
+buttons, locator roots; see [FORMAT.md](../../FORMAT.md#spec-set-config-decision-millyaml)).
+It is re-read when it changes; no restart needed.
 
 ## The shell
 
@@ -93,6 +100,14 @@ All of them are read and normalized in one place, [`lib/config.js`](lib/config.j
   toggles that status; it is a flag for a later metrics agent, not a verdict, which is
   why it is not among the decide buttons. **Team** parks an item for a live
   walkthrough, likewise not a verdict.
+- **Per-set vocabulary**: a set with a `decision-mill.yaml` shows its declared
+  buttons instead, in declared order, with keys `1…9` in that order (shown on the
+  focused item's buttons). An **Instructions** button (and `i`) opens the set's
+  instructions with a legend of every verdict, its key and hint; it opens by itself
+  on the first visit to the set. A verdict with `requires_detail` asks for the
+  reason first instead of writing a bare verdict.
+- Opening a set lands on the first spec with open items; when the current spec has
+  none left, the toolbar links to the next spec that does.
 - Stored ids match the buttons: Keep writes `decision: keep` (good as-is, with the
   recommendation on record) and Change writes `decision: change` (needs adjustment per
   the recorded recommendation — never delete by itself). The legacy values `toss`
@@ -159,6 +174,7 @@ node labels.js waves <task>                   # state, per-wave progress, stand-
 node labels.js infer-prompt <task> --out brief.md
 node labels.js import-standin <task> standin.jsonl [--model ID] [--dry-run]
 node labels.js next-wave <task> [--dry-run]   # select + freeze waves/wave-N.json
+node labels.js wait <task> --until wave-ready|round-done|labeled:N|done|change [--url URL] [--timeout 3h]
 ```
 
 Reads the files directly; prints the same numbers as Results (`lib/results.js`).
@@ -167,7 +183,7 @@ Reads the files directly; prints the same numbers as Results (`lib/results.js`).
 
 ```sh
 node validate.js              # format lint for all specs; also `npm run validate`
-node validate.js --locators   # additionally check every locator against REPO_ROOT
+node validate.js --locators   # additionally check every evidence and inline prose locator against its root
 node validate.js --strict     # warnings become failures — the gate before deleting a spec
 ```
 
@@ -184,6 +200,25 @@ npm test          # node --test: label store, rounds, waves, results math, task 
                   # and an HTTP suite against a real server on temp copies
                   # (spec writes stay surgical, blind enforcement, concurrency)
 ```
+
+## Waiting for the human
+
+Agents never need to poll. Two long-poll endpoints hold the request until a condition
+holds (or `timeout` seconds pass, default 60, max 900), and two CLIs chain them into a
+waiter that exits **0** satisfied, **2** timed out, **1** on error or unreachable:
+
+```sh
+node wait.js --url http://127.0.0.1:4601 --until all-decided [--spec SLUG] [--set ID] [--timeout 3h]
+#   until: all-decided | no-open | decided:N (or 'decided>=N') | change
+node labels.js wait <task> --url http://127.0.0.1:4610 --until wave-ready --timeout 3h
+```
+
+| Endpoint | Conditions |
+| -------- | ---------- |
+| `GET /api/specs/wait?until=&set=&spec=&since=&timeout=` | `all-decided` (every decidable item `decided`), `no-open` (nothing under the Open filter), `decided>=N`, `change` (any file in scope changed since `since`, default: since the request) |
+| `GET /api/task/<id>/wait?until=&since=&round=&reviewer=&timeout=` | `wave-ready`, `round-done`, `labeled>=N`, `done`, `change` (see LABELS.md) |
+
+Both answer `{"status": "satisfied" | "timeout", "etag", ...progress}`.
 
 ## Agent-facing writes
 
@@ -226,4 +261,6 @@ at worst tear the final line (which readers skip).
 | `lib/task.js`, `lib/labelstore.js`, `lib/rounds.js`, `lib/results.js` | label format, store, sampler, results math |
 | `lib/label-api.js` | label-mode HTTP routes |
 | `public/common.js`, `shell.js`, `spec.js`, `label.js` | the UI: helpers, shell/router, the two modes |
-| `validate.js`, `labels.js`, `harvest.js` | linter, labels CLI, and the tool-result harvester for agent-fetched content |
+| `lib/specset.js` | `decision-mill.yaml`: decisions, instructions, locator roots |
+| `lib/wait.js` | long-poll loop and the client wait loop |
+| `validate.js`, `labels.js`, `wait.js`, `harvest.js` | linter, labels CLI, spec-mode waiter, and the tool-result harvester for agent-fetched content |

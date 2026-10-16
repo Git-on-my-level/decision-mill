@@ -57,12 +57,21 @@ const Shell = {
     }
     for (const set of d.specSets) {
       const c = set.counts;
+      // A set can hold dozens of spec files: name the ones still waiting (most open
+      // first) instead of one long run-on line of every title.
+      const waiting = set.specs.filter((s) => s.counts.open > 0).sort((a, b) => b.counts.open - a.counts.open);
+      const shown = waiting.slice(0, 4);
       grid.append(el("a", { class: "home-card", href: `#/spec/${encodeURIComponent(set.id)}` },
-        el("div", { class: "hc-kind" }, "Spec set"),
+        el("div", { class: "hc-kind" }, "Spec set", el("span", { class: "hc-tag" }, `${set.specs.length} spec${set.specs.length === 1 ? "" : "s"}`),
+          set.instructions ? el("span", { class: "hc-tag" }, "instructions") : null,
+          set.configErrors ? el("b", { class: "err" }, " config error") : null),
         el("h3", {}, set.name),
-        el("p", { class: "hc-q" }, set.specs.map((s) => s.title).join(" · ") || "no specs"),
+        el("p", { class: "hc-q" }, !set.specs.length ? "no specs"
+          : !waiting.length ? "nothing open"
+          : [shown.map((s) => `${s.title} (${s.counts.open})`).join(" · "), waiting.length > shown.length ? ` · +${waiting.length - shown.length} more with open items` : ""].join("")),
         el("div", { class: "meter wide" }, el("i", { class: "m-decided", style: `width:${c.decidable ? (100 * c.decided / c.decidable).toFixed(1) : 0}%` })),
-        el("div", { class: "hc-stats" }, `${c.decided} of ${c.decidable} decided · ${c.open} open`)));
+        el("div", { class: "hc-stats" }, `${c.decided} of ${c.decidable} decided · ${c.open} open`,
+          c.deferred ? ` · ${c.deferred} deferred` : "", c.team ? ` · ${c.team} team` : "", c.needsMetrics ? ` · ${c.needsMetrics} needs metrics` : "")));
     }
     if (!grid.childNodes.length) grid.append(el("div", { class: "empty" }, "No spec sets or label tasks found yet. A label task appears here as soon as its directory (task.yaml + items.jsonl) lands under a labels root — reload to check."));
     v.append(grid);
@@ -156,7 +165,7 @@ async function runSearch() {
     </button>` : `
     <button class="sr" data-i="${i}" type="button">
       <div class="sr-top"><span class="sr-id">${esc(r.id)}</span><span class="sr-title">${esc(r.title)}</span>
-      <span class="sr-meta">${esc(r.slug)} · ${esc(r.decision ? Spec.verdictLabel(r.decision) : r.status)}</span></div>
+      <span class="sr-meta">${esc(r.slug)} · ${esc(r.decision ? Spec.verdictLabel(r.decision, r.set) : r.status)}</span></div>
       <span class="sr-snip">${esc(r.snippet)}</span>
     </button>`).join("") : `<div class="sr-empty">no matches</div>`;
   for (const b of searchResults.querySelectorAll(".sr")) {
@@ -241,7 +250,7 @@ document.addEventListener("keydown", (e) => {
     const cfg = await api("api/config");
     Object.assign(App.config, cfg);
   } catch { /* defaults */ }
-  Spec.buildLocatorPatterns(App.config.locatorScheme || "repo");
+  Spec.buildLocatorPatterns(App.config.locatorSchemes || [App.config.locatorScheme || "repo"]);
   const sub = $("#project-name");
   if (sub) { sub.textContent = App.config.projectName || ""; sub.hidden = !App.config.projectName; }
   await Shell.refreshNav();

@@ -238,6 +238,9 @@ export function loadTask(dir, id) {
       }
     } catch (e) { errors.push(`conversations.json: ${e.message}`); }
   }
+  // `pending` describes how the items get made; once they exist it is stale and
+  // would keep the task flagged as waiting.
+  if (norm.task.pending && parsed.items.length) norm.warnings.push("pending note set but items present — remove it from task.yaml");
   return {
     conversations,
     task: norm.task,

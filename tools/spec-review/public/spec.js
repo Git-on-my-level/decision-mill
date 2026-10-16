@@ -18,12 +18,35 @@ const state = {
   kind: "all",   // all | divergence | invariant | failure-case | unknown
   focusId: null,
   drafts: Object.create(null), // itemId -> unsent note text, survives re-render
+  // The set's decision-mill.yaml as the server reads it (decisions, instructions,
+  // locator schemes). Absent file = the default buttons, so nothing changes.
+  cfg: null,
+  cfgs: Object.create(null), // setId -> cfg, for labels in search results
+  instrOpen: false,
   // The locator scheme is a per-project knob (see FORMAT.md) read from
   // App.config at boot, so nothing in this file may hardcode it.
   get config() { return App.config; },
 };
 
-const KIND_LABEL = { divergence: "DIV", invariant: "INV", "failure-case": "FC", unknown: "UNK", feature: "FEAT", general: "GEN" };
+const KIND_LABEL = { divergence: "DIV", invariant: "INV", "failure-case": "FC", unknown: "UNK", feature: "FEAT", decision: "DEC", general: "GEN" };
+
+// The buttons when a set declares none (mirrors lib/specset.js DEFAULT_DECISIONS).
+const DEFAULT_DECISIONS = [
+  { id: "keep", label: "Keep", key: "1", tone: "positive", hint: "good as-is; the recommendation stays on record", kinds: null },
+  { id: "change", label: "Change", key: "2", tone: "negative", hint: "needs adjustment per the recorded recommendation (never delete by itself)", kinds: null },
+  { id: "defer", label: "Defer", key: "3", tone: "neutral", hint: "not now; the item stays open", kinds: null },
+  { id: "unify", label: "Unify on…", key: null, tone: "unify", hint: "the rewrite adopts one target's behavior on every surface", kinds: ["divergence"] },
+];
+const decisions = () => (state.cfg && state.cfg.decisions) || DEFAULT_DECISIONS;
+const TONE_BTN = { positive: "b-keep", negative: "b-toss", neutral: "ghost", unify: "b-unify" };
+const TONE_CLS = { positive: "keep", negative: "toss", neutral: "defer", unify: "unify" };
+// Does decision `d` apply to item `it`? Unify only ever applies to divergences.
+function appliesTo(d, it) {
+  const isDiv = it.kind === "divergence" || /^DIV-/.test(it.id);
+  if (d.id === "unify" && !isDiv) return false;
+  if (!d.kinds) return true;
+  return d.kinds.includes(it.kind) || (isDiv && d.kinds.includes("divergence"));
+}
 const DECIDABLE = (it) => it.kind !== "general";
 
 // Single-reviewer tool: the identity picker was noise. Notes written by agents
@@ -62,6 +85,15 @@ function specRowEl(setId, s) {
 async function loadSpecs() {
   const data = await api(`api/specs?${setQ()}`);
   state.specs = data.specs;
+  const cfgChanged = JSON.stringify(data.config || null) !== JSON.stringify(state.cfg) || state.cfgSet !== state.set;
+  state.cfgSet = state.set;
+  state.cfg = data.config || null;
+  state.cfgs[state.set] = state.cfg;
+  if (cfgChanged) {
+    buildLocatorPatterns((state.cfg && state.cfg.locatorSchemes) || App.config.locatorSchemes || [App.config.locatorScheme || "repo"]);
+    renderInstructions();
+    buildSpecHelp();
+  }
   const nav = document.querySelector(`.spec-list[data-set="${CSS.escape(state.set)}"]`);
   if (nav) {
     nav.innerHTML = "";
@@ -88,6 +120,55 @@ function renderBucketTotals() {
     .join("");
 }
 
+/* ---------- set instructions ----------
+   decision-mill.yaml `instructions` (markdown) plus a legend of the set's verdict
+   buttons. Opens on the first visit to a set only; `i` toggles it after that. */
+function renderInstructions() {
+  const d = $("#spec-instr");
+  if (!d) return;
+  const cfg = state.cfg || {};
+  const custom = Boolean(cfg.customDecisions);
+  if (!cfg.instructions && !custom) { d.hidden = true; d.innerHTML = ""; state.instrOpen = false; return; }
+  const seen = store.get(`specinstr:${state.set}`, null);
+  state.instrOpen = seen === null ? true : Boolean(seen);
+  if (seen === null) store.set(`specinstr:${state.set}`, false);
+  const legend = decisions().map((x) => `<tr><td>${x.key ? `<kbd>${esc(x.key)}</kbd>` : ""}</td><td><span class="vtag v-${TONE_CLS[x.tone] || "defer"}">${esc(x.label)}</span></td>
+    <td>${esc(x.hint || "")}${x.requires_detail ? ` <em class="req">— needs a detail in the box first</em>` : ""}${x.kinds ? ` <span class="muted">(${esc(x.kinds.join(", "))} only)</span>` : ""}</td></tr>`).join("");
+  d.hidden = false;
+  d.open = state.instrOpen;
+  d.innerHTML = `<summary>Instructions<span class="hint"> — i to show or hide</span></summary>
+    ${cfg.instructions ? `<div class="prose">${md(cfg.instructions)}</div>` : ""}
+    <table class="verdict-legend" aria-label="Verdicts">${legend}</table>`;
+  d.ontoggle = () => {
+    if (d.open === state.instrOpen) return;
+    state.instrOpen = d.open;
+    store.set(`specinstr:${state.set}`, d.open);
+    syncInstrButton();
+  };
+  syncInstrButton();
+}
+function setInstructions(open) {
+  const d = $("#spec-instr");
+  if (!d || d.hidden) return false;
+  state.instrOpen = open; d.open = open;
+  store.set(`specinstr:${state.set}`, open);
+  syncInstrButton();
+  if (open) $("#main").scrollTo({ top: 0 });
+  return true;
+}
+function syncInstrButton() {
+  const b = $("#spec-instr-btn");
+  if (b) b.classList.toggle("on", state.instrOpen);
+}
+
+// With many spec files in a set, finishing one should point at the next one that
+// still has open items instead of leaving the reviewer to scan the sidebar.
+function nextOpenSpec() {
+  const i = state.specs.findIndex((s) => s.slug === state.slug);
+  const order = [...state.specs.slice(i + 1), ...state.specs.slice(0, Math.max(0, i))];
+  return order.find((s) => s.counts.open > 0) || null;
+}
+
 let selectToken = 0;
 async function selectSpec(slug) {
   const tok = ++selectToken;
@@ -101,11 +182,18 @@ async function selectSpec(slug) {
   const fm = data.frontmatter || {};
   const list = (cls, label, arr) => arr.length
     ? `<div class="${cls}">${esc(label)}${arr.map((e) => `<div>· ${esc(e)}</div>`).join("")}</div>` : "";
+  const cfg = state.cfg || {};
+  const pos = state.specs.findIndex((s) => s.slug === slug);
   $("#spec-header").innerHTML = `
     <h2>${esc(fm.title || slug)}</h2>
-    <div class="meta">${esc(slug)}.md · baseline ${esc(String(fm.baseline || "").slice(0, 10))} · status ${esc(fm.status || "?")}</div>
+    <div class="meta">${esc(slug)}.md${state.specs.length > 1 && pos !== -1 ? ` · spec ${pos + 1} of ${state.specs.length}` : ""} · baseline ${esc(String(fm.baseline || "").slice(0, 10))} · status ${esc(fm.status || "?")}
+      ${cfg.instructions || cfg.customDecisions ? `<button id="spec-instr-btn" class="rb-btn${state.instrOpen ? " on" : ""}" type="button" title="Instructions (i)">Instructions <kbd>i</kbd></button>` : ""}</div>
+    ${list("parse-errors", "decision-mill.yaml errors:", cfg.errors || [])}
+    ${list("spec-warnings", "decision-mill.yaml warnings:", cfg.warnings || [])}
     ${list("parse-errors", "parse errors:", state.parseErrors)}
     ${list("spec-warnings", "format warnings:", state.warnings)}`;
+  const ib = $("#spec-instr-btn");
+  if (ib) ib.onclick = () => setInstructions(!state.instrOpen);
   renderFilters();
   renderItems();
   loadSpecs();
@@ -122,7 +210,7 @@ async function selectSpec(slug) {
 const STATUS_FILTERS = [["all", "All"], ["open", "Open"], ["deferred", "Deferred"], ["team", "Team"], ["decided", "Decided"]];
 const KIND_FILTERS = [
   ["all", "All kinds"], ["divergence", "Divergences"], ["invariant", "Invariants"],
-  ["failure-case", "Failure cases"], ["unknown", "Unknowns"], ["feature", "Features"],
+  ["failure-case", "Failure cases"], ["unknown", "Unknowns"], ["feature", "Features"], ["decision", "Decisions"],
 ];
 
 function renderFilters() {
@@ -139,7 +227,11 @@ function renderFilters() {
   const sel = document.createElement("select");
   sel.className = "kind-select";
   sel.setAttribute("aria-label", "Filter by kind");
+  // Only offer kinds this spec has (plus the current one), so a decision register
+  // is not a list of empty filters.
+  const present = new Set(state.items.map((it) => it.kind));
   for (const [key, label] of KIND_FILTERS) {
+    if (key !== "all" && key !== state.kind && !present.has(key)) continue;
     const o = document.createElement("option");
     o.value = key;
     o.textContent = label;
@@ -155,9 +247,12 @@ function renderProgress() {
   const decidable = state.items.filter(DECIDABLE);
   const decided = decidable.filter((i) => (i.meta.status || "open") === "decided").length;
   const metrics = decidable.filter((i) => (i.meta.status || "open") === "needs-metrics").length;
+  const open = decidable.filter((i) => (i.meta.status || "open") === "open" && i.meta.decision !== "defer").length;
+  const next = open ? null : nextOpenSpec();
   const el = $("#progress");
   el.innerHTML = `${decided}/${decidable.length} decided`
-    + (metrics ? ` · <a href="#" class="metrics-link${state.status === "needs-metrics" ? " on" : ""}">${metrics} needs metrics</a>` : "");
+    + (metrics ? ` · <a href="#" class="metrics-link${state.status === "needs-metrics" ? " on" : ""}">${metrics} needs metrics</a>` : "")
+    + (next ? ` · <a class="next-spec" href="#/spec/${encodeURIComponent(state.set)}/${encodeURIComponent(next.slug)}" title="next spec with open items">next: ${esc(next.title)} (${next.counts.open} open) →</a>` : "");
   const link = el.querySelector(".metrics-link");
   if (link) link.onclick = (e) => {
     e.preventDefault();
@@ -199,7 +294,17 @@ function renderItems() {
 const VERDICT_LABEL = { toss: "CHANGE", accept: "KEEP" };
 const VERDICT_CLASS = { accept: "keep", change: "toss" }; // change reuses toss's palette
 
+// A declared decision (decision-mill.yaml) wins over the legacy readings, so a set
+// that declares `accept` shows "ACCEPT", not "KEEP".
+const declaredDef = (d, cfg = state.cfg) => (cfg && cfg.customDecisions ? cfg.decisions.find((x) => x.id === d && x.id !== "unify") : null);
+function verdictLabel(d, cfg = state.cfg) {
+  const def = declaredDef(d, cfg);
+  return def ? def.label.toUpperCase() : VERDICT_LABEL[d] || String(d).toUpperCase();
+}
+
 function verdictCls(decision) {
+  const def = declaredDef(String(decision));
+  if (def) return TONE_CLS[def.tone] || "defer";
   const base = String(decision).split("-")[0];
   const known = ["keep", "change", "toss", "unify", "accept", "reject", "defer", "file"].includes(base) ? base : "defer";
   return VERDICT_CLASS[known] || known;
@@ -211,7 +316,7 @@ function verdictCls(decision) {
 function stampHtml(meta) {
   if (!meta.decision) return "";
   const decision = String(meta.decision);
-  const label = VERDICT_LABEL[decision] || decision.toUpperCase();
+  const label = verdictLabel(decision);
   return `<div class="stamp v-${verdictCls(decision)}">${esc(label)}
     <small>${esc(meta.decided_at || "")}</small></div>`;
 }
@@ -242,10 +347,17 @@ const UNIFY_NOTE = "the rewrite adopts this target's behavior on all platforms (
 let LOC_RE = null;
 let LOC_TOKEN_RE = null;
 
-function buildLocatorPatterns(scheme) {
-  const q = scheme.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  LOC_RE = new RegExp(`${q}:(?:[A-Za-z0-9._~@+]|[-/][ \\t]*\\n?[ \\t]*)+(?::\\d+(?:-\\d+)?(?:,\\d+(?:-\\d+)?)*)?`, "g");
-  LOC_TOKEN_RE = new RegExp(`^(${q}:[^\\s]*?)(?::(\\d+(?:-\\d+)?(?:,\\d+(?:-\\d+)?)*))?$`);
+let LOC_SCHEMES = ["repo"];
+
+// One or several schemes (LOCATOR_ROOTS / decision-mill.yaml locator_roots). The
+// lookbehind keeps "myrepo:x" from matching scheme "repo". Mirrors
+// lib/parser.js proseLocators, which `validate.js --locators` checks.
+function buildLocatorPatterns(schemes) {
+  LOC_SCHEMES = (Array.isArray(schemes) ? schemes : [schemes]).filter(Boolean);
+  if (!LOC_SCHEMES.length) LOC_SCHEMES = ["repo"];
+  const q = LOC_SCHEMES.map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  LOC_RE = new RegExp(`(?<![A-Za-z0-9_.+-])(?:${q}):(?:[A-Za-z0-9._~@+]|[-/][ \\t]*\\n?[ \\t]*)+(?::\\d+(?:-\\d+)?(?:,\\d+(?:-\\d+)?)*)?`, "g");
+  LOC_TOKEN_RE = new RegExp(`^((?:${q}):[^\\s]*?)(?::(\\d+(?:-\\d+)?(?:,\\d+(?:-\\d+)?)*))?$`);
 }
 buildLocatorPatterns("repo");
 
@@ -256,7 +368,7 @@ function parseLocatorToken(raw) {
   const m = flat.match(LOC_TOKEN_RE);
   if (!m) return null;
   const locator = m[1];
-  const rel = locator.slice(state.config.locatorPrefix.length);
+  const rel = locator.slice(locator.indexOf(":") + 1);
   if (!rel || rel.startsWith("/") || rel.split("/").includes("..") || rel.split("/").includes("...")) return null;
   return { locator, lines: m[2] || null };
 }
@@ -273,7 +385,7 @@ function linkifyLocators(root) {
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
     // Never linkify inside an existing anchor — that would nest <a> in <a>.
     if (n.parentElement && n.parentElement.closest("a")) continue;
-    if (n.nodeValue.includes(state.config.locatorPrefix)) texts.push(n);
+    if (LOC_SCHEMES.some((sc) => n.nodeValue.includes(`${sc}:`))) texts.push(n);
   }
   for (const node of texts) {
     const text = node.nodeValue;
@@ -346,9 +458,9 @@ function renderItem(it) {
     const r = t.match(/^rec: (\S+)(?: — ([\s\S]+))?$/);
     let cls = "note-row", body;
     if (m) {
-      body = `<span class="vtag v-${verdictCls(m[1])}">${esc(VERDICT_LABEL[m[1]] || m[1].toUpperCase())}</span>${m[2] ? esc(m[2]) : ""}`;
+      body = `<span class="vtag v-${verdictCls(m[1])}">${esc(verdictLabel(m[1]))}</span>${m[2] ? esc(m[2]) : ""}`;
     } else if (r) {
-      body = `<span class="vtag v-rec">REC · ${esc(VERDICT_LABEL[r[1]] || r[1].toUpperCase())}</span>${r[2] ? esc(r[2]) : ""}`;
+      body = `<span class="vtag v-rec">REC · ${esc(verdictLabel(r[1]))}</span>${r[2] ? esc(r[2]) : ""}`;
     } else if (/^status: /.test(t) || t === "decision cleared") {
       cls += " sys";
       body = esc(t);
@@ -362,9 +474,10 @@ function renderItem(it) {
   }).join("");
   const isGeneral = !DECIDABLE(it);
   const isMetrics = (meta.status || "open") === "needs-metrics";
-  // Only divergences can be unified — there is nothing to converge on for an
-  // invariant, a failure case or an unknown.
-  const isDivergence = it.kind === "divergence" || /^DIV-/.test(it.id);
+  // The set's verdict buttons, in declared order. Only divergences can be unified —
+  // there is nothing to converge on for an invariant, a failure case or an unknown.
+  const verdictButtons = decisions().filter((d) => appliesTo(d, it)).map((d) =>
+    `<button class="btn ${TONE_BTN[d.tone] || "ghost"}" data-d="${esc(d.id)}" type="button"${d.hint || d.key ? ` title="${esc([d.hint, d.key ? `key ${d.key}` : ""].filter(Boolean).join(" — "))}"` : ""}>${esc(d.label)}${d.key ? `<kbd>${esc(d.key)}</kbd>` : ""}</button>`);
   el.innerHTML = `
     <div class="body">
       <div class="item-head">
@@ -392,12 +505,10 @@ function renderItem(it) {
       ${isGeneral ? "" : `
       <div class="actions">
         <span class="lbl">decide</span>
-        <button class="btn b-keep" data-d="keep" type="button">Keep</button>
-        <button class="btn b-toss" data-d="change" type="button">Change</button>
-        <button class="btn ghost" data-d="defer" type="button">Defer</button>
+        ${verdictButtons.filter((b) => !/data-d="unify"/.test(b)).join("\n        ")}
         <button class="btn ghost b-team" data-team type="button" aria-pressed="${(meta.status || "open") === "team"}"
           title="park for the live team walkthrough — not a verdict">${(meta.status || "open") === "team" ? "✓ Team" : "Team"}</button>
-        ${isDivergence ? `<button class="btn b-unify" data-d="unify" type="button">Unify on…</button>` : ""}
+        ${verdictButtons.filter((b) => /data-d="unify"/.test(b)).join("")}
         ${meta.decision ? `<button class="btn undo" data-undecide type="button">↩ Undo decision</button>` : ""}
       </div>
       <div class="unify-row" hidden>
@@ -507,6 +618,14 @@ function renderItem(it) {
         return;
       }
       closeUnify();
+      // requires_detail (decision-mill.yaml): the detail is the actionable part, so
+      // a click with an empty box asks for it instead of writing a bare verdict.
+      const def = declaredDef(btn.dataset.d);
+      if (def && def.requires_detail && !ta.value.trim()) {
+        showHint(`${def.label} needs a detail — type what should happen in the box below, then click ${def.label} again.`);
+        ta.focus();
+        return;
+      }
       decide(btn.dataset.d, takeText());
     });
   }
@@ -635,7 +754,8 @@ async function openCode(ev, all) {
   $("#code-body").innerHTML = `<div class="code-msg">loading…</div>`;
   let data;
   try {
-    const params = new URLSearchParams({ locator: ev.locator });
+    // set= lets the server resolve this set's own locator roots.
+    const params = new URLSearchParams({ locator: ev.locator, set: state.set || "" });
     if (ev.lines != null) params.set("lines", String(ev.lines));
     if (all) params.set("all", "1");
     data = await api(`api/code?${params}`);
@@ -713,15 +833,20 @@ function moveFocus(delta) {
 // The shared keyboard model, spec flavour: j/k move, number keys are the verdict
 // buttons of the focused item (1 Keep, 2 Change, 3 Defer), u undoes its decision,
 // e opens its first citation. The shell owns ⌘K, / and ?.
-App.help.spec = [
-  ["j / k", "next / previous item"],
-  ["1 · 2 · 3", "Keep · Change · Defer the focused item (textarea text rides along)"],
-  ["u", "undo the focused item's decision"],
-  ["e", "open the focused item's first citation"],
-  ["Esc", "close the unify input or the code panel; leave a text box"],
-  ["⌘/Ctrl+Enter", "add the textarea's note without deciding"],
-];
-const SPEC_VERDICT_KEYS = { 1: "keep", 2: "change", 3: "defer" };
+// Built from the set's decisions so the help matches the buttons.
+function buildSpecHelp() {
+  const keyed = decisions().filter((d) => d.key);
+  App.help.spec = [
+    ["j / k", "next / previous item"],
+    [keyed.map((d) => d.key).join(" · "), `${keyed.map((d) => d.label.replace(/…$/, "")).join(" · ")} the focused item (textarea text rides along)`],
+    ["u", "undo the focused item's decision"],
+    ["e", "open the focused item's first citation"],
+    ...(state.cfg && (state.cfg.instructions || state.cfg.customDecisions) ? [["i", "show or hide the instructions and verdict legend"]] : []),
+    ["Esc", "close the unify input or the code panel; leave a text box"],
+    ["⌘/Ctrl+Enter", "add the textarea's note without deciding"],
+  ];
+}
+buildSpecHelp();
 App.keyHandlers.spec = (e) => {
   if (e.key === "Escape") {
     const open = document.querySelector("#items .item .unify-row:not([hidden])");
@@ -739,8 +864,11 @@ App.keyHandlers.spec = (e) => {
     el?.querySelector(".prose .loc-link, .ev")?.click();
     return true;
   }
-  if (SPEC_VERDICT_KEYS[e.key] && focused) {
-    focused.querySelector(`[data-d="${SPEC_VERDICT_KEYS[e.key]}"]`)?.click();
+  if (e.key === "i" && setInstructions(!state.instrOpen)) return true;
+  const verdict = decisions().find((d) => d.key && d.key === e.key.toLowerCase());
+  if (verdict && focused) {
+    const btn = focused.querySelector(`[data-d="${CSS.escape(verdict.id)}"]`);
+    if (btn) btn.click(); else toast(`${verdict.label} does not apply to this item`);
     return true;
   }
   if (e.key === "u" && focused) {
@@ -766,7 +894,8 @@ const Spec = {
       state.slug = null;
       await loadSpecs();
     }
-    const target = slug || state.slug || state.specs[0]?.slug;
+    // Land on the first spec that still has open items, not on a finished one.
+    const target = slug || state.slug || (state.specs.find((s) => s.counts.open > 0) || state.specs[0])?.slug;
     if (!target) {
       $("#spec-header").innerHTML = `<div class="empty">No specs in this set.</div>`;
       $("#items").innerHTML = ""; $("#filters").innerHTML = ""; $("#progress").innerHTML = "";
@@ -791,7 +920,7 @@ const Spec = {
       setTimeout(() => el.classList.remove("flash"), 1800);
     }
   },
-  verdictLabel(d) { return VERDICT_LABEL[d] || d; },
+  verdictLabel(d, setId) { return verdictLabel(d, (setId && state.cfgs[setId]) || state.cfg).toLowerCase(); },
   rowEl: specRowEl,
   buildLocatorPatterns,
 };

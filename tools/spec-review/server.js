@@ -12,10 +12,12 @@ import fs from "node:fs";
 import path from "node:path";
 import url from "node:url";
 import { execFileSync } from "node:child_process";
-import { parseSpec, updateItem, validateSpecText, isValidDecision, canonicalDecision, LINES_RE, dumpMeta } from "./lib/parser.js";
-import { SPECS_DIRS, LABELS_ROOTS, REPO_ROOT, PORT, HOST, EXCLUDED, LOCATOR_PREFIX, LOCATOR_SCHEME, PROJECT_NAME, REVIEWER, REVIEWER_EXPLICIT } from "./lib/config.js";
+import { parseSpec, updateItem, validateSpecText, isValidDecision, canonicalDecision, LINES_RE, dumpMeta, NEW_ID_RE, crossFileWarnings } from "./lib/parser.js";
+import { SPECS_DIRS, LABELS_ROOTS, REPO_ROOT, PORT, HOST, EXCLUDED, LOCATOR_PREFIX, LOCATOR_SCHEME, LOCATOR_ROOTS, PROJECT_NAME, REVIEWER, REVIEWER_EXPLICIT } from "./lib/config.js";
 import { handleLabelApi, searchTasks, taskSummaries } from "./lib/label-api.js";
 import { discoverTasks } from "./lib/task.js";
+import { loadSpecSetConfig, rootsForSet, publicSetConfig, declaredIds, splitLocator, SET_CONFIG_FILE } from "./lib/specset.js";
+import { parseUntil, requestTimeout, longPoll, etagOf } from "./lib/wait.js";
 
 const HERE = path.dirname(url.fileURLToPath(import.meta.url));
 
@@ -59,6 +61,26 @@ function setFor(u) {
   return set;
 }
 
+// A set's decision-mill.yaml, re-read whenever the file changes (no restart).
+const cfgCache = new Map();
+function setConfig(set) {
+  const file = path.join(set.dir, SET_CONFIG_FILE);
+  let key = "-";
+  try { const st = fs.statSync(file); key = `${st.mtimeMs}:${st.size}`; } catch { /* absent */ }
+  const hit = cfgCache.get(set.dir);
+  if (hit && hit.key === key) return hit.value;
+  const cfg = loadSpecSetConfig(set.dir);
+  const roots = rootsForSet(cfg);
+  const value = { cfg, roots, opts: { schemes: Object.keys(roots), decisions: cfg.customDecisions ? cfg.decisions : null }, declared: declaredIds(cfg) };
+  cfgCache.set(set.dir, { key, value });
+  return value;
+}
+
+// Warnings that need the whole set: a <CAP> code or id reused across files.
+function setWarnings(set) {
+  return crossFileWarnings(specFiles(set).map((f) => ({ slug: f.replace(/\.md$/, ""), items: parseSpec(fs.readFileSync(path.join(set.dir, f), "utf8")).items })));
+}
+
 function specFiles(set) {
   return fs.readdirSync(set.dir)
     .filter((f) => f.endsWith(".md") && !EXCLUDED.has(f))
@@ -90,39 +112,60 @@ function specSummary(set, file) {
   return { slug, file, title: frontmatter?.title || slug, status: frontmatter?.status, baseline: frontmatter?.baseline, counts, byKind, parseErrors: errors };
 }
 
-function resolveLocator(locator) {
+// `<scheme>:<path>` -> a file under that scheme's root (several roots may be
+// declared: LOCATOR_ROOTS, and a set's decision-mill.yaml locator_roots).
+function resolveLocator(locator, roots) {
   if (!locator) throw new HttpError(400, "locator query param required");
-  if (!locator.startsWith(LOCATOR_PREFIX)) throw new HttpError(400, `locator must start with ${LOCATOR_PREFIX}`);
-  const rel = locator.slice(LOCATOR_PREFIX.length).replace(/\/+$/, "");
-  if (!rel) throw new HttpError(400, "empty locator path");
-  if (rel.startsWith("/") || rel.split("/").includes("..")) throw new HttpError(400, "invalid locator path");
-  const abs = path.resolve(REPO_ROOT, rel);
-  if (abs !== REPO_ROOT && !abs.startsWith(REPO_ROOT + path.sep)) throw new HttpError(400, "locator escapes repo");
-  return { rel, abs };
+  const sp = splitLocator(locator, roots);
+  if (sp.error) throw new HttpError(400, sp.error);
+  const { scheme, rel, root } = sp;
+  if (!fs.existsSync(root)) throw new HttpError(404, `checkout for ${scheme}: not found at ${root} (set LOCATOR_ROOTS or REPO_ROOT)`);
+  const abs = path.resolve(root, rel);
+  if (abs !== root && !abs.startsWith(root + path.sep)) throw new HttpError(400, "locator escapes its root");
+  return { scheme, rel, abs, root };
 }
 
-// Lazily-built, cached list of tracked paths, used only to suggest alternatives
-// for a locator that no longer resolves (specs drift; files get moved).
-let trackedPaths = null;
-function repoPaths() {
-  if (trackedPaths) return trackedPaths;
+// Lazily-built, cached list of tracked paths per root, used only to suggest
+// alternatives for a locator that no longer resolves (specs drift; files move).
+const trackedPaths = new Map();
+function repoPaths(root) {
+  if (trackedPaths.has(root)) return trackedPaths.get(root);
+  let paths = [];
   try {
-    const out = execFileSync("git", ["-C", REPO_ROOT, "ls-files", "-z"], { maxBuffer: 1 << 28 }).toString("utf8");
-    trackedPaths = out.split("\0").filter(Boolean);
-  } catch {
-    trackedPaths = [];
-  }
-  return trackedPaths;
+    const out = execFileSync("git", ["-C", root, "ls-files", "-z"], { maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "ignore"] }).toString("utf8");
+    paths = out.split("\0").filter(Boolean);
+  } catch { /* not a git checkout */ }
+  trackedPaths.set(root, paths);
+  return paths;
 }
 
-function suggestLocators(rel) {
-  const paths = repoPaths();
+function suggestLocators(scheme, root, rel) {
+  const paths = repoPaths(root);
   if (!paths.length) return [];
   const tailMatch = paths.filter((p) => p.endsWith("/" + rel));
-  if (tailMatch.length) return tailMatch.slice(0, 8).map((p) => `${LOCATOR_PREFIX}${p}`);
+  if (tailMatch.length) return tailMatch.slice(0, 8).map((p) => `${scheme}:${p}`);
   const base = rel.split("/").filter(Boolean).pop();
   if (!base) return [];
-  return paths.filter((p) => p.endsWith("/" + base)).slice(0, 8).map((p) => `${LOCATOR_PREFIX}${p}`);
+  return paths.filter((p) => p.endsWith("/" + base)).slice(0, 8).map((p) => `${scheme}:${p}`);
+}
+
+// What /api/specs/wait watches: one spec, or every spec in the set. The etag is a
+// content hash, recomputed only when a file's stat changes.
+const scopeCache = new Map();
+function scopeState(set, slug) {
+  const files = slug ? specFiles(set).filter((f) => f === `${slug}.md`) : specFiles(set);
+  if (slug && !files.length) throw new HttpError(404, `unknown spec '${slug}'`);
+  const key = files.map((f) => { const st = fs.statSync(path.join(set.dir, f)); return `${f}:${st.mtimeMs}:${st.size}`; }).join("|");
+  const ck = `${set.dir}|${slug || ""}`;
+  const hit = scopeCache.get(ck);
+  if (hit && hit.key === key) return hit.value;
+  const specs = files.map((f) => specSummary(set, f));
+  const counts = { decidable: 0, decided: 0, open: 0, deferred: 0, team: 0, needsMetrics: 0 };
+  for (const sp of specs) for (const k of Object.keys(counts)) counts[k] += sp.counts[k] || 0;
+  const etag = etagOf(files.map((f) => `${f}\0${fs.readFileSync(path.join(set.dir, f), "utf8")}`).join("\0"));
+  const value = { etag, counts, specs: specs.map((sp) => ({ slug: sp.slug, title: sp.title, counts: sp.counts })) };
+  scopeCache.set(ck, { key, value });
+  return value;
 }
 
 // "12", "12-40", or "364,388-468" -> list of [from, to] clamped to the file.
@@ -215,8 +258,10 @@ const server = http.createServer(async (req, res) => {
       const sets = availableSets().map((set) => {
         const specs = specFiles(set).map((f) => specSummary(set, f));
         const sum = (k) => specs.reduce((a, s) => a + (s.counts[k] || 0), 0);
+        const { cfg } = setConfig(set);
         return { id: set.id, name: set.name, dir: set.dir, specs: specs.map((s) => ({ slug: s.slug, title: s.title, counts: s.counts })),
-          counts: { decidable: sum("decidable"), decided: sum("decided"), open: sum("open") } };
+          counts: { decidable: sum("decidable"), decided: sum("decided"), open: sum("open"), deferred: sum("deferred"), team: sum("team"), needsMetrics: sum("needsMetrics") },
+          instructions: Boolean(cfg.instructions), configErrors: cfg.errors.length };
       });
       return json(res, 200, { specSets: sets, tasks: taskSummaries(LABELS_ROOTS, reviewerFor(req)), reviewer: reviewerFor(req) });
     }
@@ -227,7 +272,30 @@ const server = http.createServer(async (req, res) => {
 
     if (p === "/api/specs" && req.method === "GET") {
       const set = setFor(u);
-      return json(res, 200, { set: set.id, specsDir: set.dir, repoRoot: REPO_ROOT, specs: specFiles(set).map((f) => specSummary(set, f)) });
+      const { cfg, roots } = setConfig(set);
+      return json(res, 200, { set: set.id, specsDir: set.dir, repoRoot: REPO_ROOT, config: publicSetConfig(cfg, roots), specs: specFiles(set).map((f) => specSummary(set, f)) });
+    }
+
+    if (p === "/api/specs/wait" && req.method === "GET") {
+      // Long-poll for agents: answer when the condition holds, or with status
+      // "timeout" after `timeout` seconds. Clients chain requests passing `since`.
+      const set = setFor(u);
+      const slug = u.searchParams.get("spec") || null;
+      if (slug && !/^[a-z0-9-]+$/.test(slug)) throw new HttpError(400, "bad spec slug");
+      const cond = parseUntil(u.searchParams.get("until") || "all-decided", "spec");
+      if (cond.error) throw new HttpError(400, cond.error);
+      const timeoutS = requestTimeout(u.searchParams.get("timeout"));
+      if (timeoutS == null) throw new HttpError(400, "timeout must be seconds (or 90s, 5m)");
+      let since = u.searchParams.get("since") || null;
+      return longPoll(req, res, json, { timeoutS, check: () => {
+        const st = scopeState(set, slug);
+        if (cond.kind === "change" && !since) since = st.etag; // baseline: now
+        const done = cond.kind === "all-decided" ? st.counts.decided === st.counts.decidable
+          : cond.kind === "no-open" ? st.counts.open === 0
+          : cond.kind === "decided>=" ? st.counts.decided >= cond.n
+          : st.etag !== since;
+        return { done, body: { until: u.searchParams.get("until") || "all-decided", set: set.id, spec: slug, etag: st.etag, since, counts: st.counts, specs: st.specs } };
+      } });
     }
 
     if (p === "/api/search" && req.method === "GET") {
@@ -262,6 +330,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/config" && req.method === "GET") {
       return json(res, 200, {
         locatorScheme: LOCATOR_SCHEME, locatorPrefix: LOCATOR_PREFIX,
+        locatorSchemes: Object.keys(LOCATOR_ROOTS),
         projectName: PROJECT_NAME, reviewer: reviewerFor(req),
         repoRootPresent: fs.existsSync(REPO_ROOT),
         specSets: availableSets().map((s) => ({ id: s.id, name: s.name })),
@@ -274,7 +343,9 @@ const server = http.createServer(async (req, res) => {
       const file = `${m[1]}.md`;
       if (!specFiles(set).includes(file)) return json(res, 404, { error: "unknown spec" });
       const text = fs.readFileSync(path.join(set.dir, file), "utf8");
-      const { frontmatter, items, errors, warnings } = validateSpecText(text, m[1]);
+      const { opts } = setConfig(set);
+      const { frontmatter, items, errors, warnings } = validateSpecText(text, m[1], opts);
+      warnings.push(...(setWarnings(set).get(m[1]) || []));
       return json(res, 200, { set: set.id, slug: m[1], frontmatter, raw: text, parseErrors: errors, warnings,
         items: items.map((it) => ({ id: it.id, title: it.title, kind: it.kind, meta: it.meta, prose: it.prose })) });
     }
@@ -289,17 +360,24 @@ const server = http.createServer(async (req, res) => {
       const now = new Date();
       const stamp = localStamp(now);
       const text = fs.readFileSync(file, "utf8");
+      const sc = setConfig(set);
       let updated;
       if (body.action === "decision") {
         if (!body.decision) return json(res, 400, { error: "decision required" });
         // Legacy spellings (toss/accept) are accepted from old clients but the
         // stored value is always canonical — Keep = good as-is, Change = needs
-        // adjustment per the recorded recommendation.
-        const decision = canonicalDecision(String(body.decision));
-        if (!isValidDecision(decision)) {
-          return json(res, 400, { error: `invalid decision '${decision}' — want keep|change|defer|file|unify-on-<slug>` });
+        // adjustment per the recorded recommendation. An id the set declares in
+        // decision-mill.yaml is stored exactly as declared (even `accept`).
+        const decision = canonicalDecision(String(body.decision), sc.declared);
+        if (!isValidDecision(decision, sc.declared)) {
+          const want = [...new Set([...sc.declared, "keep", "change", "defer", "file"])].join("|");
+          return json(res, 400, { error: `invalid decision '${decision}' — want ${want}|unify-on-<slug>` });
         }
         const detail = body.decision_detail ? String(body.decision_detail).trim() : "";
+        const def = sc.cfg.customDecisions ? sc.cfg.decisions.find((d) => d.id === decision) : null;
+        if (def && def.requires_detail && !detail) {
+          return json(res, 400, { error: `'${def.label}' needs a decision_detail — say what should happen (requires_detail in ${SET_CONFIG_FILE})` });
+        }
         updated = updateItem(text, id, (meta) => {
           meta.decision = decision;
           meta.decision_detail = detail || null;
@@ -363,7 +441,7 @@ const server = http.createServer(async (req, res) => {
         const { items: existing } = parseSpec(text);
         if (id !== String(body.id || id)) return json(res, 400, { error: "url id and body id disagree" });
         if (existing.some((it) => it.id === id)) return json(res, 409, { error: `item ${id} already exists` });
-        if (!/^(DIV|INV|FC|UNK|GEN|FEAT)-[A-Z0-9]+-\d{3}$/.test(id)) return json(res, 400, { error: "malformed id" });
+        if (!NEW_ID_RE.test(id)) return json(res, 400, { error: "malformed id (want DIV|INV|FC|UNK|FEAT|DEC|GEN-<CAP>-<NNN>)" });
         if (!body.title || !body.meta || typeof body.meta !== "object") {
           return json(res, 400, { error: "title and meta required" });
         }
@@ -378,7 +456,7 @@ const server = http.createServer(async (req, res) => {
         for (let i = 0; i < gen.headingLine; i++) offset += lines[i].length + 1;
         const block = `### ${id} — ${String(body.title)}\n\n\`\`\`adjudication\n${yamlText}\`\`\`\n\n${String(body.prose || "").trim()}\n\n`;
         const candidate = text.slice(0, offset) + block + text.slice(offset);
-        const check = validateSpecText(candidate, slug);
+        const check = validateSpecText(candidate, slug, sc.opts);
         if (check.errors.length) return json(res, 400, { error: `refused — result would not validate: ${check.errors.join("; ")}` });
         updated = candidate;
       } else {
@@ -399,9 +477,12 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/code" && req.method === "GET") {
       const locator = u.searchParams.get("locator");
       const linesParam = u.searchParams.get("lines");
-      const { rel, abs } = resolveLocator(locator);
+      // Roots are per set (decision-mill.yaml may add some); without ?set= the
+      // global roots apply.
+      const roots = u.searchParams.get("set") ? setConfig(setFor(u)).roots : LOCATOR_ROOTS;
+      const { scheme, rel, abs, root } = resolveLocator(locator, roots);
       if (!fs.existsSync(abs)) {
-        return json(res, 404, { error: `not found in checkout: ${rel}`, rel, suggestions: suggestLocators(rel) });
+        return json(res, 404, { error: `not found in ${scheme}: checkout (${root}): ${rel}`, rel, suggestions: suggestLocators(scheme, root, rel) });
       }
       const stat = fs.statSync(abs);
       if (stat.isDirectory()) {
@@ -409,7 +490,7 @@ const server = http.createServer(async (req, res) => {
         const entries = names.slice(0, 200).map((name) => {
           let dir = false;
           try { dir = fs.statSync(path.join(abs, name)).isDirectory(); } catch { /* broken symlink */ }
-          return { name, dir, locator: `${LOCATOR_PREFIX}${rel}/${name}` };
+          return { name, dir, locator: `${scheme}:${rel}/${name}` };
         });
         return json(res, 200, { locator, rel, directory: true, entries, truncated: names.length > entries.length });
       }
@@ -443,12 +524,14 @@ const server = http.createServer(async (req, res) => {
 
     if (p === "/api/validate" && req.method === "GET") {
       const set = setFor(u);
+      const { cfg, opts } = setConfig(set);
+      const cross = setWarnings(set);
       const results = specFiles(set).map((f) => {
         const slug = f.replace(/\.md$/, "");
-        const { errors, warnings } = validateSpecText(fs.readFileSync(path.join(set.dir, f), "utf8"), slug);
-        return { set: set.id, slug, errors, warnings };
+        const { errors, warnings } = validateSpecText(fs.readFileSync(path.join(set.dir, f), "utf8"), slug, opts);
+        return { set: set.id, slug, errors, warnings: [...warnings, ...(cross.get(slug) || [])] };
       });
-      return json(res, 200, { results, ok: results.every((r) => r.errors.length === 0) });
+      return json(res, 200, { results, config: { errors: cfg.errors, warnings: cfg.warnings }, ok: !cfg.errors.length && results.every((r) => r.errors.length === 0) });
     }
 
     if (p === "/favicon.ico") { res.writeHead(204); res.end(); return; }
@@ -488,9 +571,28 @@ server.on("error", (e) => {
 
 server.listen(PORT, HOST, () => {
   const shown = HOST.includes(":") ? `[${HOST}]` : HOST;
-  console.log(`decision-mill: http://${shown}:${PORT}`);
-  for (const s of availableSets()) console.log(`  specs [${s.id}]: ${s.dir}`);
-  if (availableSets().length) console.log(`  code checkout (${LOCATOR_PREFIX}): ${REPO_ROOT}${fs.existsSync(REPO_ROOT) ? "" : "  (MISSING — set REPO_ROOT env)"}`);
-  for (const r of LABELS_ROOTS) console.log(`  labels root: ${r}  (${discoverTasks([r]).length} task(s))`);
+  const base = `http://${shown}:${PORT}`;
+  const missing = (r) => (fs.existsSync(r) ? "" : "  (MISSING)");
+  console.log(`decision-mill: ${base}/`);
+  for (const s of availableSets()) {
+    const { cfg, roots } = setConfig(s);
+    const n = specFiles(s).length;
+    console.log(`  specs [${s.id}]: ${s.dir}  (${n} spec${n === 1 ? "" : "s"})  ${base}/#/spec/${s.id}`);
+    if (cfg.present) {
+      console.log(`    ${SET_CONFIG_FILE}: ${cfg.customDecisions ? `decisions ${cfg.decisions.map((d) => `${d.id}${d.key ? `[${d.key}]` : ""}`).join(" ")}` : "default decisions"}${cfg.instructions ? " · instructions" : ""}`);
+      for (const e of cfg.errors) console.error(`    ERROR ${e}`);
+    }
+    for (const [k, r] of Object.entries(roots)) if (!(k in LOCATOR_ROOTS) || LOCATOR_ROOTS[k] !== r) console.log(`    locator root ${k}: -> ${r}${missing(r)}`);
+  }
+  if (availableSets().length) {
+    for (const [k, r] of Object.entries(LOCATOR_ROOTS)) console.log(`  locator root ${k}: -> ${r}${missing(r)}`);
+    console.log(`  agents: wait for decisions with  node wait.js --url ${base} --until all-decided`);
+  }
+  for (const r of LABELS_ROOTS) {
+    const tasks = discoverTasks([r]);
+    console.log(`  labels root: ${r}  (${tasks.length} task(s))`);
+    for (const t of tasks.slice(0, 12)) console.log(`    ${t.id}: ${base}/#/task/${encodeURIComponent(t.id)}`);
+    if (tasks.length > 12) console.log(`    … ${tasks.length - 12} more on the home screen`);
+  }
   console.log(`  reviewer: ${REVIEWER_EXPLICIT ? REVIEWER : `Tailscale-User-Login header, else "${REVIEWER}"`}`);
 });

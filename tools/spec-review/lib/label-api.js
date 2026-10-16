@@ -12,6 +12,8 @@
 //   POST /api/task/:id/undo                 {item_id} -> appends label: null
 //   POST /api/task/:id/labels               agent batch: {reviewer, labels:[...]}
 //                                           source is always model-standin
+//   GET  /api/task/:id/wait?until=…          long-poll for agents (wave-ready,
+//                                           round-done, labeled>=N, done, change)
 
 import { speakerStates, suggestions, segmentLabel, progress, auditSample, speakerResults, exportTruth } from "./speakers.js";
 import fs from "node:fs";
@@ -21,7 +23,8 @@ import { proposalText } from "./proposal.js";
 import { readTaskLabels, reviewerFile, safeReviewer, buildRow, appendRows, labeledStates, readRows } from "./labelstore.js";
 import { buildRounds, currentRound } from "./rounds.js";
 import { computeResults, positiveLabel, modelVerdict } from "./results.js";
-import { readWaves, nextWave, waveStatus } from "./waves.js";
+import { readWaves, nextWave, waveStatus, waveReviewer, humanStatesOf } from "./waves.js";
+import { parseUntil, requestTimeout, longPoll, etagOf } from "./wait.js";
 
 // Task cache keyed by the mtimes of task.yaml and items.jsonl, so editing either
 // file is picked up on the next request without a restart.
@@ -88,12 +91,66 @@ export function taskSummaries(roots, reviewer) {
     const ws = waves ? waveStatus({ task: t.task, items: t.items, waves, labels, reviewer }) : null;
     return {
       id: entry.id, title: t.task.title, question: t.task.question, blind: t.task.blind,
-      items: t.items.length, empty: !t.items.length, pending: Boolean(t.task.pending), labeled, standinReviewers: standin,
+      items: t.items.length, empty: !t.items.length, pending: Boolean(t.task.pending) && !t.items.length, labeled, standinReviewers: standin,
       rounds: { total: ws ? ws.count : rounds.length, done: rounds.filter((r) => r.ids.every((id) => mine.has(id))).length, current: cur < rounds.length ? cur + 1 : null, size: ws ? ws.size : t.task.round_size },
       waves: ws ? { state: ws.state, frozen: ws.frozen, count: ws.count, current: ws.current } : null,
       errors: t.errors.length, warnings: t.warnings.length,
     };
   });
+}
+
+// Where a task stands for a waiting agent: the human's progress through rounds or
+// waves, read fresh from the files. `want` names the human; by default it is the
+// reviewer with the most human labels (as in waves mode), because an agent's
+// request carries no reviewer identity of its own.
+export function labelWaitState(entry, want) {
+  const t = getTask(entry);
+  const labels = readTaskLabels(entry.dir);
+  const who = want ? safeReviewer(want) : waveReviewer(t.task.waves, labels, null);
+  const human = humanStatesOf(labels, who);
+  const { rounds, waves } = roundsFor(entry, t);
+  const ws = waves ? waveStatus({ task: t.task, items: t.items, waves, labels, reviewer: who }) : null;
+  const cur = currentRound(rounds, human);
+  // Label rows only ever append, so file sizes are a faithful change signal.
+  const files = [];
+  for (const sub of ["labels", "waves"]) {
+    const d = path.join(entry.dir, sub);
+    if (!fs.existsSync(d)) continue;
+    for (const f of fs.readdirSync(d).sort()) { try { files.push(`${sub}/${f}:${fs.statSync(path.join(d, f)).size}`); } catch { /* raced */ } }
+  }
+  const labeled = t.items.filter((it) => human.has(it.id)).length;
+  return {
+    task: entry.id, kind: t.task.kind || "label", reviewer: who, items: t.items.length, labeled,
+    unit: ws ? "wave" : "round",
+    rounds: rounds.map((r) => ({ n: r.n, size: r.ids.length, labeled: r.ids.filter((id) => human.has(id)).length })),
+    current: cur < rounds.length ? rounds[cur].n : null,
+    waves: ws ? { state: ws.state, frozen: ws.frozen, count: ws.count, current: ws.current } : null,
+    etag: etagOf(`${stamp(entry.dir)}|${files.join("|")}`),
+  };
+}
+
+// Is `cond` satisfied? Returns {done} or {error} for a condition this task can
+// never meet (so a waiter exits instead of hanging). `base` carries the round a
+// round-done wait started on, filled in on first evaluation.
+export function labelCondition(st, cond, base) {
+  if (st.kind === "speakers" && !["labeled>=", "change"].includes(cond.kind)) return { error: `speaker tasks support only labeled>=N and change` };
+  if (cond.kind === "labeled>=") {
+    if (st.items && cond.n > st.items) return { error: `labeled>=${cond.n} can never hold: the task has ${st.items} item(s)` };
+    return { done: Boolean(st.items) && st.labeled >= cond.n };
+  }
+  if (cond.kind === "change") { if (!base.since) base.since = st.etag; return { done: st.etag !== base.since }; }
+  if (cond.kind === "wave-ready") {
+    if (!st.waves) return { error: "this task uses rounds, not waves — wait with round-done" };
+    return { done: st.waves.state === "inferring" || st.waves.state === "done" };
+  }
+  const allDone = st.rounds.length > 0 && st.current == null && (!st.waves || st.waves.state === "done");
+  if (cond.kind === "done") return { done: allDone };
+  // round-done: the round (or wave) that was current when the wait began.
+  if (base.round == null) base.round = st.current;
+  if (base.round == null) return { done: st.rounds.length > 0 };
+  const r = st.rounds.find((x) => x.n === Number(base.round));
+  if (!r) return { error: `${st.unit} ${base.round} does not exist` };
+  return { done: r.labeled >= r.size };
 }
 
 // Search text: what a reviewer reads. Item and evidence `url`s are not in it.
@@ -176,13 +233,28 @@ export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, j
   const p = u.pathname;
   if (p === "/api/tasks" && req.method === "GET") return json(res, 200, { reviewer, tasks: taskSummaries(roots, reviewer) });
 
-  const m = p.match(/^\/api\/task\/([^/]+)(?:\/(item|labels|results|media|label|undo|speakers|suggestions)(?:\/(.+))?)?$/);
+  const m = p.match(/^\/api\/task\/([^/]+)(?:\/(item|labels|results|media|label|undo|speakers|suggestions|wait)(?:\/(.+))?)?$/);
   if (!m) return false;
   const [, taskId, sub, rest] = m;
   const entry = discoverTasks(roots).find((e) => e.id === decodeURIComponent(taskId));
   if (!entry) throw new HttpError(404, `unknown task '${decodeURIComponent(taskId)}'`);
   const t = getTask(entry);
 
+  if (sub === "wait" && req.method === "GET") {
+    const until = u.searchParams.get("until") || "";
+    const cond = parseUntil(until, "label");
+    if (cond.error) throw new HttpError(400, cond.error);
+    const timeoutS = requestTimeout(u.searchParams.get("timeout"));
+    if (timeoutS == null) throw new HttpError(400, "timeout must be seconds (or 90s, 5m)");
+    const base = { since: u.searchParams.get("since") || null, round: u.searchParams.get("round") || null };
+    const want = u.searchParams.get("reviewer");
+    return longPoll(req, res, json, { timeoutS, check: () => {
+      const st = labelWaitState(entry, want);
+      const r = labelCondition(st, cond, base);
+      if (r.error) return { error: r.error, code: 409 };
+      return { done: r.done, body: { until, ...st, since: base.since, baseline: { round: base.round } } };
+    } });
+  }
   if (sub === "suggestions") {
     const states = speakerStates(readTaskLabels(entry.dir), safeReviewer(reviewer));
     const picks = suggestions(t.items, states, t.task.suggest_threshold, t.task.kind === "speakers");

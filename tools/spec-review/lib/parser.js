@@ -3,33 +3,40 @@
 // bytes of the file are preserved verbatim.
 
 import * as yaml from "js-yaml";
-import { LOCATOR_PREFIX } from "./config.js";
+import { LOCATOR_ROOTS, LOCATOR_PREFIX, DELEGATED_PATHS } from "./config.js";
 
-const ID_RE = /^(DIV|INV|FC|UNK|FEAT|GEN)-[A-Z0-9]+-\d+$/;
-const HEADING_RE = /^###\s+((?:DIV|INV|FC|UNK|FEAT|GEN)-[A-Z0-9]+-\d+)\s+—\s+(.+?)\s*$/;
+export const ID_KINDS = ["DIV", "INV", "FC", "UNK", "FEAT", "DEC", "GEN"];
+const KIND_ALT = ID_KINDS.join("|");
+export const ID_RE = new RegExp(`^(${KIND_ALT})-[A-Z0-9]+-\\d+$`);
+const HEADING_RE = new RegExp(`^###\\s+((?:${KIND_ALT})-[A-Z0-9]+-\\d+)\\s+—\\s+(.+?)\\s*$`);
 // A heading that *looks* like an adjudicable item but fails HEADING_RE must be
 // reported, never silently skipped (a plain "-" instead of "—" used to make an
 // item invisible to both the UI and the linter).
-const NEAR_HEADING_RE = /^###\s+(?:(?:DIV|INV|FC|UNK|FEAT|GEN)\b|[A-Z]{2,5}-[A-Z0-9]+-\d+)/;
+const NEAR_HEADING_RE = new RegExp(`^###\\s+(?:(?:${KIND_ALT})\\b|[A-Z]{2,5}-[A-Z0-9]+-\\d+)`);
+// What a new item's id must look like (append-item): zero-padded to three digits.
+export const NEW_ID_RE = new RegExp(`^(${KIND_ALT})-[A-Z0-9]+-\\d{3}$`);
 
 // Vocabularies from specs/FORMAT.md v1.
-export const KINDS = new Set(["divergence", "invariant", "failure-case", "unknown", "feature", "general"]);
+export const KINDS = new Set(["divergence", "invariant", "failure-case", "unknown", "feature", "decision", "general"]);
 export const STATUSES = new Set(["open", "decided", "needs-metrics", "team"]);
 export const SIMPLE_DECISIONS = new Set(["keep", "change", "toss", "accept", "reject", "defer", "file"]);
 // Canonical vocabulary is keep|change|defer|file|unify-on-<x>. `toss` and `accept`
 // are legacy spellings (the UI always said "Change"/"Keep" but stored these ids) —
 // parsers must still accept and render them; writers normalize through this map.
+// A spec set that declares one of them (decision-mill.yaml) stores it as declared.
 export const LEGACY_DECISIONS = { toss: "change", accept: "keep" };
-export const canonicalDecision = (d) => LEGACY_DECISIONS[d] || d;
+export const canonicalDecision = (d, declared) => (declared && declared.has(d) ? d : LEGACY_DECISIONS[d] || d);
 export const CONFIDENCES = new Set(["high", "med", "low"]);
 export const UNIFY_RE = /^unify-on-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const LINES_RE = /^\d+(-\d+)?(,\d+(-\d+)?)*$/;
-// An absolute, home-relative or dot-relative locator is machine-specific and
-// defeats the point of the prefix.
-const NON_PORTABLE_RE = new RegExp(`^${LOCATOR_PREFIX}(/|~|\\.\\.?/)`);
+// `change` needs one of these prefixes on its decision_detail (FORMAT.md).
+export const CHANGE_PREFIX_RE = /^(remove|change|resolved|moot):/;
+const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const schemesOf = (opts) => (opts && opts.schemes && opts.schemes.length ? opts.schemes : Object.keys(LOCATOR_ROOTS));
 
-export function isValidDecision(d) {
-  return SIMPLE_DECISIONS.has(d) || UNIFY_RE.test(String(d || ""));
+// `declared` = the ids a spec set's decision-mill.yaml adds to the vocabulary.
+export function isValidDecision(d, declared) {
+  return SIMPLE_DECISIONS.has(d) || UNIFY_RE.test(String(d || "")) || Boolean(declared && declared.has(d));
 }
 
 // Strip one trailing CR so a CRLF-saved spec file still parses. Byte offsets are
@@ -148,10 +155,27 @@ export function dumpMeta(meta) {
   return yaml.dump(meta, { lineWidth: -1, noRefs: true, quotingType: '"' });
 }
 
+// Is `loc` a locator under one of `schemes`, and is its path portable? Returns
+// null when fine, else the problem.
+function locatorProblem(loc, schemes) {
+  const s = String(loc || "");
+  const scheme = schemes.find((k) => s.startsWith(`${k}:`));
+  const want = schemes.map((k) => `${k}:<path>`).join(" or ");
+  if (!scheme) return `bad evidence locator (want ${want}): ${loc}`;
+  // An absolute, home-relative or dot-relative locator is machine-specific and
+  // defeats the point of the prefix.
+  if (/^(\/|~|\.\.?\/)/.test(s.slice(scheme.length + 1))) return `non-portable evidence locator: ${loc}`;
+  return null;
+}
+
 // errors = structural problems that make the file unusable or unsafe to edit.
 // warnings = vocabulary/consistency drift worth fixing but not blocking.
-export function validateSpecText(text, slug) {
+// opts (all optional): { schemes: locator schemes this set accepts (default: the
+// global roots), decisions: the set's declared decision list (decision-mill.yaml) }.
+export function validateSpecText(text, slug, opts = {}) {
   const { frontmatter, items, errors } = parseSpec(text);
+  const schemes = schemesOf(opts);
+  const declared = new Set((opts.decisions || []).filter((d) => d.id !== "unify").map((d) => d.id));
   const errs = [...errors];
   const warns = [];
   if (!frontmatter) errs.push("no frontmatter");
@@ -166,9 +190,11 @@ export function validateSpecText(text, slug) {
     if (!ID_RE.test(it.id)) errs.push(`${it.id}: malformed id`);
     else if (!/-\d{3}$/.test(it.id)) warns.push(`${it.id}: id number is not zero-padded to 3 digits`);
     if (!meta.kind) errs.push(`${it.id}: missing kind`);
-    else if (!KINDS.has(meta.kind)) warns.push(`${it.id}: unknown kind '${meta.kind}'`);
-    if (meta.status != null && !STATUSES.has(meta.status)) warns.push(`${it.id}: unknown status '${meta.status}'`);
-    if (meta.decision != null && !isValidDecision(meta.decision)) warns.push(`${it.id}: unknown decision '${meta.decision}'`);
+    else if (!KINDS.has(meta.kind)) warns.push(`${it.id}: unknown kind '${meta.kind}' (want ${[...KINDS].join("|")})`);
+    if (meta.status != null && !STATUSES.has(meta.status)) warns.push(`${it.id}: unknown status '${meta.status}' (want ${[...STATUSES].join("|")})`);
+    if (meta.decision != null && !isValidDecision(meta.decision, declared)) {
+      warns.push(`${it.id}: unknown decision '${meta.decision}' (want ${[...new Set([...declared, "keep", "change", "defer", "file"])].join("|")}|unify-on-<x>)`);
+    }
     if (meta.confidence != null && !CONFIDENCES.has(meta.confidence)) warns.push(`${it.id}: unknown confidence '${meta.confidence}' (want high|med|low)`);
     if (meta.decision != null && meta.status === "open" && meta.decision !== "defer") {
       warns.push(`${it.id}: has decision '${meta.decision}' but status is still open`);
@@ -181,8 +207,8 @@ export function validateSpecText(text, slug) {
     if (meta.evidence != null && !Array.isArray(meta.evidence)) errs.push(`${it.id}: evidence must be a list`);
     for (const ev of Array.isArray(meta.evidence) ? meta.evidence : []) {
       if (!ev || typeof ev !== "object") { errs.push(`${it.id}: evidence entry must be a mapping`); continue; }
-      if (!ev.locator || !String(ev.locator).startsWith(LOCATOR_PREFIX)) errs.push(`${it.id}: bad evidence locator (want ${LOCATOR_PREFIX}<path>): ${ev.locator}`);
-      else if (NON_PORTABLE_RE.test(String(ev.locator))) errs.push(`${it.id}: non-portable evidence locator: ${ev.locator}`);
+      const problem = locatorProblem(ev.locator, schemes);
+      if (problem) errs.push(`${it.id}: ${problem}`);
       if (ev.lines != null && !LINES_RE.test(String(ev.lines))) {
         warns.push(`${it.id}: unparseable evidence lines '${ev.lines}' (want N, N-M, or comma-separated ranges)`);
       }
@@ -211,22 +237,108 @@ export function validateSpecText(text, slug) {
     for (const n of Array.isArray(meta.notes) ? meta.notes : []) {
       if (!n || typeof n !== "object" || typeof n.text !== "string") errs.push(`${it.id}: malformed note entry`);
     }
+    warns.push(...decisionWarnings(it, { declared, decisions: opts.decisions || null }));
   }
   if (!items.length) errs.push("no adjudicable items found");
   return { frontmatter, items, errors: errs, warnings: warns };
 }
 
-// Optional deeper check: does each locator exist in the configured checkout?
-// Kept separate from validateSpecText so the format lint stays checkout-independent.
-export function checkLocators(items, exists) {
-  const bad = [];
-  for (const it of items) {
-    for (const ev of Array.isArray(it.meta?.evidence) ? it.meta.evidence : []) {
-      const loc = String(ev?.locator || "");
-      if (!loc.startsWith(LOCATOR_PREFIX)) continue;
-      const rel = loc.slice(LOCATOR_PREFIX.length);
-      if (!exists(rel)) bad.push(`${it.id}: evidence locator not in checkout: ${loc}`);
+// The rules that keep a decision readable once the spec is disposed of. Shared by
+// the validator and the spec header (they used to live only in validate.js, so the
+// UI header showed fewer warnings than the README promised).
+export function decisionWarnings(it, { declared = new Set(), decisions = null } = {}) {
+  const out = [];
+  const d = it.meta.decision;
+  if (d == null) return out;
+  const detail = String(it.meta.decision_detail || "").trim();
+  // A bare `change` is unreadable once only the decision survives: every change
+  // needs a decision_detail with a disambiguating prefix. `toss` is the legacy
+  // spelling — unless the set declares `toss` as its own id.
+  if (d === "change" || (d === "toss" && !declared.has("toss"))) {
+    if (!detail) out.push(`${it.id}: ${d} with null decision_detail (required before spec deletion)`);
+    else if (!CHANGE_PREFIX_RE.test(detail)) out.push(`${it.id}: ${d} detail lacks remove:/change:/resolved:/moot: prefix`);
+  } else {
+    const def = (decisions || []).find((x) => x.id === d);
+    if (def && def.requires_detail && !detail) out.push(`${it.id}: '${d}' requires a decision_detail (requires_detail in decision-mill.yaml)`);
+  }
+  // Legacy stored spellings — the UI always displayed Change/Keep for these.
+  if (d === "toss" && !declared.has("toss")) out.push(`${it.id}: legacy decision 'toss' — repair to 'change'`);
+  if (d === "accept" && !declared.has("accept")) out.push(`${it.id}: legacy decision 'accept' — repair to 'keep'`);
+  // Delegated-ownership rule (opt-in, DELEGATED_PATHS): an item whose evidence lives
+  // entirely under code owned by another team describes a mechanism this review
+  // cannot decide. `file` is the only verdict that gives it an owner. An entry with
+  // a scheme (`kb:vendor/`) matches that root; a bare path matches the primary root.
+  if (DELEGATED_PATHS.length && d !== "file" && d !== "defer") {
+    const evidence = Array.isArray(it.meta.evidence) ? it.meta.evidence : [];
+    const delegated = (loc) => DELEGATED_PATHS.some((p) => String(loc).startsWith(/^[a-z][a-z0-9+.-]*:/.test(p) ? p : LOCATOR_PREFIX + p));
+    if (evidence.length > 0 && evidence.every((ev) => delegated(ev?.locator || ""))) {
+      out.push(`${it.id}: all evidence is under a delegated path but decision is '${d}' (expected file — another team owns this mechanism)`);
     }
   }
+  return out;
+}
+
+// Locators written inline in prose (`repo:web/src/a.ts:18-30`), as the UI
+// linkifies them. A locator may wrap across a source line, but only right after a
+// "/" or "-". Elided paths (`repo:.../x.ts`) and bare schemes are skipped.
+export function proseLocators(prose, schemes) {
+  const out = [];
+  if (!prose || !schemes || !schemes.length) return out;
+  const alt = schemes.map(reEsc).join("|");
+  const re = new RegExp(`(?<![A-Za-z0-9_.+-])(?:${alt}):(?:[A-Za-z0-9._~@+]|[-/][ \\t]*\\n?[ \\t]*)+(?::\\d+(?:-\\d+)?(?:,\\d+(?:-\\d+)?)*)?`, "g");
+  const tok = new RegExp(`^((?:${alt}):[^\\s]*?)(?::(\\d+(?:-\\d+)?(?:,\\d+(?:-\\d+)?)*))?$`);
+  for (const m of String(prose).matchAll(re)) {
+    const flat = m[0].replace(/\s+/g, "").replace(/[.,;:!?)\]}'"]+$/, "");
+    const t = flat.match(tok);
+    if (!t) continue;
+    const rel = t[1].slice(t[1].indexOf(":") + 1);
+    if (!rel || rel.startsWith("/") || rel.split("/").includes("..") || rel.split("/").includes("...")) continue;
+    out.push({ locator: t[1], lines: t[2] || null });
+  }
+  return out;
+}
+
+// Optional deeper check: does each locator — structured evidence and inline prose —
+// exist in its root's checkout? `exists(scheme, rel)` answers for one path. Kept
+// separate from validateSpecText so the format lint stays checkout-independent.
+export function checkLocators(items, exists, opts = {}) {
+  const schemes = schemesOf(opts);
+  const bad = [];
+  for (const it of items) {
+    const seen = new Set();
+    const check = (loc, where) => {
+      const scheme = schemes.find((k) => loc.startsWith(`${k}:`));
+      if (!scheme || seen.has(loc)) return;
+      seen.add(loc);
+      const rel = loc.slice(scheme.length + 1).replace(/\/+$/, "");
+      if (!exists(scheme, rel)) bad.push(`${it.id}: ${where} locator not in checkout: ${loc}`);
+    };
+    for (const ev of Array.isArray(it.meta?.evidence) ? it.meta.evidence : []) check(String(ev?.locator || ""), "evidence");
+    for (const p of proseLocators(it.prose, schemes)) check(p.locator, "prose");
+  }
   return bad;
+}
+
+// The <CAP> code of an id (`DEC-FLAGS-001` -> `FLAGS`).
+export const capCode = (id) => String(id).split("-")[1] || "";
+
+// Ids are permanent references, so one <CAP> code belongs to one spec file. Given
+// [{slug, items}] for a whole set, returns slug -> warnings for every file that
+// reuses a code (or an id) an earlier file already uses.
+export function crossFileWarnings(files) {
+  const out = new Map(files.map((f) => [f.slug, []]));
+  const capOwner = new Map();
+  const idOwner = new Map();
+  for (const f of files) {
+    const caps = new Set(f.items.map((it) => capCode(it.id)).filter(Boolean));
+    for (const cap of caps) {
+      if (capOwner.has(cap)) out.get(f.slug).push(`CAP code '${cap}' is also used by ${capOwner.get(cap)}.md — give each spec file its own code so ids stay unique references`);
+      else capOwner.set(cap, f.slug);
+    }
+    for (const it of f.items) {
+      if (idOwner.has(it.id) && idOwner.get(it.id) !== f.slug) out.get(f.slug).push(`${it.id}: id also defined in ${idOwner.get(it.id)}.md`);
+      else if (!idOwner.has(it.id)) idOwner.set(it.id, f.slug);
+    }
+  }
+  return out;
 }
