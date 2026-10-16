@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#f6f5f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14171d" media="(prefers-color-scheme: dark)">
 <title>Decision Mill</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -12,7 +14,7 @@
     <header id="brand">
       <a href="#/" class="brand-link"><h1>DECISION&nbsp;MILL</h1></a>
       <div class="sub" id="project-name" hidden></div>
-      <button id="menu-toggle" type="button" aria-label="Menu">☰</button>
+      <button id="drawer-close" type="button" aria-label="Close menu">×</button>
     </header>
     <div id="global-search">
       <button id="search-trigger" type="button" aria-label="Global search"><span>search everything…</span><kbd>⌘K</kbd></button>
@@ -26,6 +28,13 @@
     </footer>
   </aside>
 
+  <header id="topbar">
+    <button id="menu-toggle" type="button" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">☰</button>
+    <button id="topbar-title" type="button" aria-label="Pick a spec or task"><span class="tt-name">Decision Mill</span><span class="tt-sub"></span></button>
+    <button id="topbar-search" type="button" aria-label="Search everything">⌕</button>
+  </header>
+  <div id="drawer-backdrop" hidden></div>
+
   <main id="main">
     <section id="home-view"></section>
     <section id="spec-view" hidden>
@@ -36,6 +45,14 @@
         <div id="progress"></div>
       </div>
       <div id="items"></div>
+      <div id="mbar" role="region" aria-label="Decide the current item" hidden>
+        <div class="mbar-nav">
+          <button id="mbar-prev" type="button" aria-label="Previous item">‹</button>
+          <button id="mbar-label" type="button" title="Show this item"><span class="mb-id"></span><small class="mb-pos"></small></button>
+          <button id="mbar-next" type="button" aria-label="Next item">›</button>
+        </div>
+        <div id="mbar-slot"></div>
+      </div>
     </section>
     <section id="label-view" hidden></section>
   </main>
@@ -63,9 +80,11 @@
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script src="vendor/marked.js"></script>
 <script src="common.js"></script>
+<script src="view-logic.js"></script>
 <script src="spec.js"></script>
 <script src="speakers.js"></script>
 <script src="proposal-diff.js"></script>
+<script src="pair-logic.js"></script>
 <script src="label.js"></script>
 <script src="shell.js"></script>
 </body>

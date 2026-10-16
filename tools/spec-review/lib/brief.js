@@ -6,6 +6,7 @@
 
 import { isAbstain } from "./task.js";
 import { proposalText } from "./proposal.js";
+import { pairText } from "./pair.js";
 
 const pad2 = (n) => String(n).padStart(2, "0");
 const clock = (sec) => {
@@ -28,6 +29,7 @@ function contentText(c, task, maxChars) {
     text = (c.segments || []).filter((s) => s && String(s.text || "").trim())
       .map((s) => `${s.start != null ? `[${clock(s.start)}] ` : ""}${speaker(s, task)}: ${oneLine(s.text)}`).join("\n");
   } else if (c.type === "proposal") text = proposalText(c);
+  else if (c.type === "pair") text = pairText(c);
   else text = String(c.body ?? "");
   if (!text) text = "(empty)";
   return text.length > maxChars ? `${text.slice(0, maxChars)}\n… (cut at ${maxChars} chars)` : text;

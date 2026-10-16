@@ -91,7 +91,7 @@ One JSON object per line:
 | Key | Required | Meaning |
 | --- | -------- | ------- |
 | `id` | yes | Unique string. Labels reference it forever; never reuse one. |
-| `content` | yes | `{"type": "transcript", "segments": [...]}`, `{"type": "markdown", "body": "…"}`, `{"type": "text", "body": "…"}`, or `{"type": "proposal", …}` (a proposed edit to judge; see [Proposal items](#proposal-items)). |
+| `content` | yes | `{"type": "transcript", "segments": [...]}`, `{"type": "markdown", "body": "…"}`, `{"type": "text", "body": "…"}`, `{"type": "proposal", …}` (a proposed edit to judge; see [Proposal items](#proposal-items)), or `{"type": "pair", …}` (two sides to compare on one time axis; see [Pair items](#pair-items)). |
 | `segments[]` | — | `speaker`, `is_user` (styled as the reviewer), `start` seconds (shown as a timestamp; clickable when audio exists), `text`, optional `name` (display name). |
 | `title` | no | Shown above the content. |
 | `url` | no | Permalink to where the item came from (the pull request, doc, thread or dashboard). Shown as a quiet "Source ↗" link at the right of the title row, opening in a new tab. Only `http:`/`https:` URLs become links; anything else is not shown, and the validator warns. Visible even when blind, and left out of search text and stand-in briefs. |
@@ -165,6 +165,66 @@ needs still belongs on the card itself.
 
 `examples/labels/proposal-demo/` is a fictional task with every shape (spelling,
 title, CJK, a long rewrite, multi-field, a two-record comparison).
+
+## Pair items
+
+Use `content.type: pair` when the question is **"are these two the same thing?"**:
+two captures that overlap in time, two transcripts of one call, two model outputs
+for one input. Never concatenate the two sides into one transcript with divider
+rows; the card does the comparison for the reviewer:
+
+1. **A header strip**: two lanes, A and B, on the shared axis with the overlap
+   shaded; the overlap's length; each side's length and note; and a similarity
+   cue computed in the overlap window — the share of A's distinct words that B
+   also says (and the reverse) and whether the speaker counts match.
+2. **Combined** (the default): both sides merged into one timeline, limited to the
+   overlap ± 60 s, with "Show 12 more lines before / after". A line from A and a
+   line from B within 12 s of each other that say essentially the same thing
+   (word-set Jaccard ≥ 0.5, or a fragment mostly contained in the other line)
+   appear **once**, badged `A+B`, with the words only one side heard marked
+   inline (dotted blue = only in A, solid amber = only in B). Lines only one side
+   has carry that side's letter and colored edge.
+3. **Side by side**: the same window as two aligned columns on a screen at least
+   900 px wide; an A | B toggle on a phone.
+4. **Full**: the whole merged timeline.
+
+The chosen view is remembered per task in the browser. Model answers stay hidden
+until the card is labeled, as for every content type.
+
+```json
+{"id": "cap-0815", "title": "Two captures, 34 s overlap",
+ "meta": {"started_at": "2026-10-08T09:23:01Z", "pair_type": "same device"},
+ "content": {"type": "pair",
+   "sides": [{"id": "A", "label": "Capture A", "started_at": "2026-10-08T09:23:01Z", "duration_s": 34, "note": "pendant"},
+             {"id": "B", "label": "Capture B", "started_at": "2026-10-08T08:47:55Z", "duration_s": 2391, "note": "phone"}],
+   "segments": [{"side": "A", "speaker": "A_0", "name": "Speaker 0", "is_user": false, "start": 2105.5, "end": 2106.6, "text": "…"},
+                {"side": "B", "speaker": "B_0", "name": "Speaker 0", "is_user": false, "start": 2106.0, "end": 2107.9, "text": "…"}],
+   "overlap": {"start": 2105.5, "end": 2139.5}},
+ "hidden": {"jev": {"verdict": "same"}}}
+```
+
+| Key | Meaning |
+| --- | ------- |
+| `sides[]` | Exactly two: `id` (short, shown as the badge: `A`, `B`), `label`, and where the side sits on the axis — `start` (seconds on the shared axis) or `started_at` (ISO; the earliest side is 0) — plus `duration_s`. Without either, the side's extent is its segments'. `note` is shown after the length (device, model). |
+| `segments[]` | `side` (a side id), `start` and optional `end` in seconds **on the shared axis**, `text`, and `speaker` / `name` / `is_user` as in a transcript. Any order. |
+| `overlap` | Optional `{start, end}` on the axis; computed from the sides when absent. No overlap: the strip says so and every view shows everything. |
+
+`examples/labels/pair-demo/` is a fictional task with a short fragment inside a
+long recording, an overlap that is a different conversation, two devices that
+heard a different number of speakers, and a pair with no overlap.
+
+**Converting older items.** Items built as one transcript with `speaker: "DIVIDER"`
+rows (`name: "━━ Capture A"`, `text: "Capture A starts 09:23:00 UTC, lasts 0m 34s"`)
+and speakers named `A · Speaker 0` / `B · Speaker 0` convert with
+
+```sh
+node tools/spec-review/scripts/transcript-to-pair.js items.jsonl --out items.pair.jsonl
+```
+
+It keeps every other key (`id`, `stratum`, `title`, `meta`, `summary`, `hidden`,
+`truncated`, …), so existing labels stay attached; items that do not follow the
+convention pass through unchanged. It never rewrites its input: check the new
+file, then swap it in yourself.
 
 ## labels/\<reviewer\>.jsonl
 
@@ -370,7 +430,7 @@ Writes must be `content-type: application/json`.
 
 `node tools/spec-review/validate.js` checks every task under the configured roots
 alongside the specs: task.yaml structure, duplicate or reserved keys, items that do
-not parse, duplicate ids, unknown content types, malformed proposal content, item or evidence `url`s that are not `http(s)`, model verdicts that are not label
+not parse, duplicate ids, unknown content types, malformed proposal or pair content, item or evidence `url`s that are not `http(s)`, model verdicts that are not label
 ids, media paths outside `media/`, unparseable label rows, and wave files that do not
 parse, skip a number, or put an item in two waves.
 

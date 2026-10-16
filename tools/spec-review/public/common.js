@@ -112,3 +112,80 @@ const store = {
 };
 
 const isTyping = () => /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "") || document.activeElement?.isContentEditable;
+
+/* ---------- phone layout helpers ---------- */
+// One breakpoint for "phone": the bottom bars, the docked answer box, swipes.
+// (Guarded: the tests load this file with no DOM.)
+const phoneMQ = typeof window !== "undefined" && typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 640px)") : null;
+const isPhone = () => Boolean(phoneMQ && phoneMQ.matches);
+function onPhoneChange(fn) {
+  if (!phoneMQ) return;
+  if (phoneMQ.addEventListener) phoneMQ.addEventListener("change", fn);
+  else if (phoneMQ.addListener) phoneMQ.addListener(fn);
+}
+
+// The top bar's title and subtitle (narrow screens only; hidden on desktop).
+App.setTopbar = (name, sub) => {
+  const n = $("#topbar-title .tt-name"), s = $("#topbar-title .tt-sub");
+  if (n) n.textContent = name || "Decision Mill";
+  if (s) s.textContent = sub || "";
+};
+
+// A bar fixed to the bottom of a phone screen (spec mode's verdict bar, label
+// mode's action bar): keep --dock-h equal to its height so #main can pad for it
+// and nothing hides behind it. A bar that is not fixed (desktop) measures 0.
+App.dock = (() => {
+  let current = null;
+  const ro = typeof ResizeObserver === "function" ? new ResizeObserver(() => measure()) : null;
+  function measure() {
+    const b = current;
+    const h = b && b.isConnected && !b.hidden && getComputedStyle(b).position === "fixed" ? b.offsetHeight : 0;
+    document.documentElement.style.setProperty("--dock-h", `${h}px`);
+  }
+  return (bar) => {
+    if (bar !== current) {
+      if (ro && current) ro.unobserve(current);
+      current = bar || null;
+      if (ro && current) ro.observe(current);
+    }
+    measure();
+  };
+})();
+// iOS keeps a fixed bottom bar behind the on-screen keyboard: lift bars by the
+// part of the layout viewport the keyboard covers.
+if (typeof window !== "undefined" && window.visualViewport) {
+  const vv = window.visualViewport;
+  const lift = () => {
+    const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+    document.documentElement.style.setProperty("--kb", `${kb > 60 ? kb : 0}px`);
+  };
+  vv.addEventListener("resize", lift);
+  vv.addEventListener("scroll", lift);
+}
+
+// Horizontal swipe on `target` -> fn(1) for next, fn(-1) for previous. Ignored
+// inside text fields, code, tables and anything that scrolls sideways, and when
+// the touch selected text.
+function onSwipe(target, fn) {
+  if (!target) return;
+  let x0 = 0, y0 = 0, t0 = 0, armed = false;
+  const scrollsSideways = (node) => {
+    for (let n = node; n && n !== target; n = n.parentElement) {
+      if (n.scrollWidth > n.clientWidth + 2 && /(auto|scroll)/.test(getComputedStyle(n).overflowX)) return true;
+    }
+    return false;
+  };
+  target.addEventListener("touchstart", (e) => {
+    armed = e.touches.length === 1 && !e.target.closest("input, textarea, select, pre, table, audio, .dots, details.more[open]") && !scrollsSideways(e.target);
+    if (!armed) return;
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now();
+  }, { passive: true });
+  target.addEventListener("touchend", (e) => {
+    if (!armed) return;
+    armed = false;
+    if (Date.now() - t0 > 700 || String(window.getSelection?.() || "")) return;
+    const t = e.changedTouches[0];
+    const d = globalThis.ViewLogic ? ViewLogic.swipeDirection(t.clientX - x0, t.clientY - y0) : 0;
+    if (d) fn(d);
+  }, { passive: true });
+}

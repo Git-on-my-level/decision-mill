@@ -18,6 +18,9 @@ a working UI in both modes on a fresh clone, with citations that open real files
   verdict-only model, and a model stand-in's labels (`labels/opus-standin.jsonl`).
   Rounds are 6 cards so the round-done screen appears quickly. Labels you add while
   trying it are written next to the stand-in file and ignored by git.
+- `labels/pair-demo/` — a label task of `pair` items (see `LABELS.md`, "Pair items"):
+  four invented pairs of overlapping recordings, shown as one combined timeline with
+  the differences marked.
 
 The locators read `repo:examples/code/…`, which resolves against this repository
 because `REPO_ROOT` defaults to the repo containing the tool. That is the only reason

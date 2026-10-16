@@ -20,6 +20,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { discoverTasks, loadTask, getPath, isAbstain } from "./task.js";
 import { proposalText } from "./proposal.js";
+import { pairText } from "./pair.js";
 import { readTaskLabels, reviewerFile, safeReviewer, buildRow, appendRows, labeledStates, readRows } from "./labelstore.js";
 import { buildRounds, currentRound } from "./rounds.js";
 import { computeResults, positiveLabel, modelVerdict } from "./results.js";
@@ -157,7 +158,7 @@ export function labelCondition(st, cond, base) {
 const segText = (segs) => (Array.isArray(segs) ? segs.map((s) => s && s.text).filter(Boolean).join(" ") : "");
 function visibleText(it) {
   const c = it.content || {};
-  return [it.id, it.title, it.summary, c.type === "transcript" ? segText(c.segments) : c.type === "proposal" ? proposalText(c) : c.body].filter(Boolean).join("\n");
+  return [it.id, it.title, it.summary, c.type === "transcript" ? segText(c.segments) : c.type === "proposal" ? proposalText(c) : c.type === "pair" ? pairText(c) : c.body].filter(Boolean).join("\n");
 }
 
 export function searchTasks(roots, terms, limit) {

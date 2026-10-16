@@ -107,6 +107,8 @@ function render() {
   const t = L.task;
   stopPolling();
   const n = labeledCount();
+  App.setTopbar(t.title, `${n}/${L.index.size} labeled`);
+  App.dock(null);
   const tabs = [["label", "Label", null], ["items", "Items", `${n}/${L.index.size}`], ["results", "Results", null]];
   const head = el("header", { class: "lv-head" },
     el("div", { class: "lv-title" },
@@ -131,6 +133,7 @@ function refreshTaskRow() {
   const n = labeledCount();
   const tabCount = document.querySelector(".lv-head .tab:nth-child(2) small");
   if (tabCount) tabCount.textContent = `${n}/${L.index.size}`;
+  App.setTopbar(L.task.title, `${n}/${L.index.size} labeled`);
   if (!row) return;
   const total = L.index.size || 1;
   row.querySelector(".meter i").style.width = `${(100 * n / total).toFixed(1)}%`;
@@ -158,7 +161,10 @@ function renderLabel(body) {
     });
     body.append(d);
   }
-  body.append(el("div", { id: "card-slot" }));
+  const slot = el("div", { id: "card-slot" });
+  // On a phone a sideways swipe on the card is previous / next.
+  onSwipe(slot, (d) => { if (isPhone()) step(d); });
+  body.append(slot);
   renderRoundBar();
   renderCardArea({ scroll: !L.instrOpen });
 }
@@ -262,9 +268,10 @@ async function renderCardArea({ scroll = false } = {}) {
   const ids = roundIds();
   if (!ids.length) {
     slot.replaceChildren(waves() && L.index.size ? waveDone() : emptyTask());
+    App.dock(null);
     return;
   }
-  if (L.pos >= ids.length) { slot.replaceChildren(waves() ? waveDone() : roundDone()); if (scroll) scrollToCard(); return; }
+  if (L.pos >= ids.length) { slot.replaceChildren(waves() ? waveDone() : roundDone()); App.dock(null); if (scroll) scrollToCard(); return; }
   const id = currentId();
   const tok = ++L.cardTok;
   let entry = L.cache.get(id);
@@ -287,7 +294,9 @@ async function renderCardArea({ scroll = false } = {}) {
     try { const r=await postJSON(`api/task/${enc(L.taskId)}/suggestions`,{ids:similar});L.undo.push(...r.rows.map(r=>r.item_id));L.cache.clear();await refreshTask();L.pos=firstUnlabeled(L.roundIdx) ?? roundIds().length;render();Shell.refreshNav(); }
     catch(e){toast(e.message,"err");}
   }},`Label similar items too · accept ${similar.length} confident suggestions`));
-  slot.replaceChildren(assist, cardEl(entry), actionBar(entry));
+  const bar = actionBar(entry);
+  slot.replaceChildren(...(assist.childNodes.length ? [assist] : []), cardEl(entry), bar);
+  App.dock(bar);
   if (scroll) scrollToCard();
   prefetch();
 }
@@ -335,6 +344,7 @@ function contentEl(c, audioRef) {
   if (c.type === "transcript") return transcriptEl(c.segments, audioRef);
   if (c.type === "markdown") return el("div", { class: "prose doc", html: md(c.body) });
   if (c.type === "proposal") return proposalEl(c);
+  if (c.type === "pair") return pairEl(c);
   return el("div", { class: "plain doc" }, String(c.body ?? ""));
 }
 
@@ -525,6 +535,161 @@ function proposalEl(c) {
     policyEl(c));
 }
 
+/* ---------- pair: two sides on one time axis, "are these the same thing?" ----------
+   A header strip (two lanes, the overlap shaded, lengths and a similarity cue),
+   then one of three views: Combined (both sides merged inside the overlap ±60 s;
+   lines that say the same thing appear once, marked A+B, with the wording
+   differences inline), Side by side (A | B toggle on a phone), or Full. */
+const PL = () => globalThis.PairLogic;
+const PAIR_PAD_S = 60, PAIR_MORE = 12;
+const PAIR_VIEWS = [["combined", "Combined"], ["side", "Side by side"], ["full", "Full"]];
+const wideMQ = typeof window.matchMedia === "function" ? window.matchMedia("(min-width: 900px)") : null;
+const pairViewGet = () => { const v = store.get(`pairview:${L.taskId}`, "combined"); return PAIR_VIEWS.some(([k]) => k === v) ? v : "combined"; };
+
+function pairWho(seg) {
+  if (seg.is_user) return L.task.user_label || "You";
+  if (seg.name) return String(seg.name);
+  const m = /(?:^|_)(\d+)$/.exec(String(seg.speaker || ""));
+  return m ? `Speaker ${Number(m[1])}` : String(seg.speaker || "Speaker");
+}
+
+// The two texts of an A+B line as one, with A-only and B-only words marked.
+function pairDiffRuns(a, b) {
+  const runs = PD().diffWords(String(a ?? ""), String(b ?? ""));
+  const m = (cls, text, who) => el("mark", { class: `pd ${cls}`, title: `only in ${who}` }, text);
+  return runs.flatMap((r) => r.op === "eq" ? [r.text]
+    : r.op === "del" ? [m("pd-a", r.text, "A")]
+    : r.op === "ins" ? [m("pd-b", r.text, "B")]
+    : [m("pd-a", r.from, "A"), m("pd-b", r.text, "B")]);
+}
+
+function pairHeadEl(c, ids, sideOf, win, ex, sim) {
+  const segs = Array.isArray(c.segments) ? c.segments : [];
+  const spans = Object.values(ex);
+  const lo = Math.min(...spans.map((s) => s.start), ...segs.map((s) => Number(s.start) || 0));
+  const hi = Math.max(...spans.map((s) => s.end), ...segs.map((s) => Number(s.end ?? s.start) || 0), lo + 1);
+  const pctOf = (t) => `${(100 * (t - lo) / (hi - lo)).toFixed(2)}%`;
+  const widthOf = (a, b) => `${Math.max(0.6, 100 * (b - a) / (hi - lo)).toFixed(2)}%`;
+  const lane = (id) => {
+    const e = ex[id];
+    return el("div", { class: "pt-lane" },
+      el("span", { class: `pbadge ${sideOf(id)}` }, id),
+      el("div", { class: "pt-track" }, e ? el("i", { class: `pt-bar ${sideOf(id)}`, style: `left:${pctOf(e.start)};width:${widthOf(e.start, e.end)}` }) : null));
+  };
+  const lanes = el("div", { class: "pt-lanes" }, ids.slice(0, 2).map(lane),
+    win ? el("i", { class: "pt-overlap", style: `left:calc(28px + (100% - 28px) * ${((win.start - lo) / (hi - lo)).toFixed(4)});width:calc((100% - 28px) * ${Math.max(0.004, (win.end - win.start) / (hi - lo)).toFixed(4)})`, title: "overlap" }) : null);
+  const def = (id) => (c.sides || []).find((s) => s && String(s.id) === id) || { id };
+  const sideFact = (id) => {
+    const d = def(id), e = ex[id];
+    const len = d.duration_s != null ? fmtDur(d.duration_s) : e ? fmtDur(e.end - e.start) : "";
+    return el("span", { class: "pf" }, el("span", { class: `pbadge ${sideOf(id)}` }, id), " ", d.label && d.label !== id ? `${d.label} · ` : "", len || "—", d.note ? el("span", { class: "muted" }, ` · ${d.note}`) : null);
+  };
+  const pctTxt = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
+  const [a, b] = ids;
+  return el("section", { class: "pair-head", "aria-label": "The two sides on one timeline" },
+    lanes,
+    el("div", { class: "pt-axis" }, el("span", {}, fmtClock(lo)), win ? el("span", { class: "pt-ov" }, `overlap ${fmtClock(win.start)}–${fmtClock(win.end)}`) : el("span", { class: "pt-ov none" }, "no overlap"), el("span", {}, fmtClock(hi))),
+    el("div", { class: "pair-facts" },
+      el("span", { class: "pf" }, el("b", {}, win ? fmtDur(win.end - win.start) : "0s"), " overlap"),
+      sideFact(a), sideFact(b)),
+    el("div", { class: "pair-facts sim", title: "Computed in the overlap window: the share of each side's distinct words that the other side also says" },
+      el("span", { class: "pf" }, el("b", {}, pctTxt(sim.aInB)), ` of ${a}'s words are in ${b}`),
+      el("span", { class: "pf" }, el("b", {}, pctTxt(sim.bInA)), ` of ${b}'s are in ${a}`, win ? "" : el("span", { class: "muted" }, " (whole recordings: no overlap)")),
+      el("span", { class: `pf${sim.speakersMatch === false ? " warn" : ""}` }, `Speakers ${sim.speakers[0]} · ${sim.speakers[1]}`, sim.speakersMatch == null ? "" : sim.speakersMatch ? " ✓ same count" : " ≠")));
+}
+
+function pairEl(c) {
+  const P = PL();
+  const ids = P.sideIds(c);
+  if (ids.length < 2) return el("div", { class: "empty-seg" }, "(pair content needs two sides)");
+  const sideOf = (id) => (String(id) === ids[0] ? "sa" : "sb");
+  const win = P.overlapOf(c);
+  const ex = P.extents(c);
+  const rows = P.mergeLines(c);
+  const [w0, w1] = P.windowRange(rows, win, PAIR_PAD_S);
+  let from = w0, to = w1;
+  let view = pairViewGet();
+  let phoneSide = ids[0];
+  const root = el("div", { class: "pair" });
+  const body = el("div", { class: "pair-body" });
+  const tabs = el("div", { class: "pair-views", role: "tablist", "aria-label": "View" });
+
+  const lineEl = (r) => {
+    if (r.kind === "both") {
+      const wa = pairWho(r.a), wb = pairWho(r.b);
+      return el("div", { class: "pl pl-both" },
+        el("div", { class: "pl-meta" }, el("span", { class: "pbadge both", title: "said on both sides" }, `${ids[0]}+${ids[1]}`), el("span", { class: "pl-time" }, fmtClock(r.start)), el("span", { class: "pl-who" }, wa === wb ? wa : `${wa} / ${wb}`)),
+        el("div", { class: "pl-text" }, r.a.text.trim() === r.b.text.trim() ? r.a.text : pairDiffRuns(r.a.text, r.b.text)));
+    }
+    return el("div", { class: `pl pl-one ${sideOf(r.kind)}` },
+      el("div", { class: "pl-meta" }, el("span", { class: `pbadge ${sideOf(r.kind)}`, title: `only in ${r.kind}` }, r.kind), el("span", { class: "pl-time" }, fmtClock(r.start)), el("span", { class: "pl-who" }, pairWho(r.seg))),
+      el("div", { class: "pl-text" }, r.seg.text));
+  };
+  const more = (dir, n) => el("button", { class: "pair-more", type: "button", onclick: () => {
+    if (dir < 0) from = Math.max(0, from - PAIR_MORE); else to = Math.min(rows.length, to + PAIR_MORE);
+    paint();
+  } }, dir < 0 ? `Show ${Math.min(PAIR_MORE, n)} more line${n === 1 ? "" : "s"} before` : `Show ${Math.min(PAIR_MORE, n)} more line${n === 1 ? "" : "s"} after`);
+  const windowNote = () => win ? el("div", { class: "pair-note" }, `Overlap ±${PAIR_PAD_S}s · ${to - from} of ${rows.length} lines`) : null;
+
+  function paintCombined(all) {
+    const [a, b] = all ? [0, rows.length] : [from, to];
+    const list = el("div", { class: "pair-lines" }, rows.slice(a, b).map(lineEl));
+    if (!rows.length) list.append(el("div", { class: "empty-seg" }, "(no lines)"));
+    body.replaceChildren(...[
+      all ? el("div", { class: "pair-note" }, `Everything · ${rows.length} lines`) : windowNote(),
+      !all && a > 0 ? more(-1, a) : null, list, !all && b < rows.length ? more(1, rows.length - b) : null].filter(Boolean));
+  }
+  function paintSide() {
+    const slice = rows.slice(from, to);
+    if (wideMQ && wideMQ.matches) {
+      const cell = (side, r) => {
+        if (r.kind === "both") {
+          const seg = side === 0 ? r.a : r.b;
+          const runs = PD().diffWords(r.a.text, r.b.text);
+          const keep = side === 0 ? "del" : "ins";
+          const txt = runs.flatMap((x) => x.op === "eq" ? [x.text] : x.op === keep ? [el("mark", { class: `pd ${side === 0 ? "pd-a" : "pd-b"}` }, x.text)] : x.op === "chg" ? [el("mark", { class: `pd ${side === 0 ? "pd-a" : "pd-b"}` }, side === 0 ? x.from : x.text)] : []);
+          return el("div", { class: `ps-cell ${side === 0 ? "sa" : "sb"}` }, el("div", { class: "pl-who" }, pairWho(seg)), el("div", { class: "pl-text" }, txt));
+        }
+        if (r.kind === ids[side]) return el("div", { class: `ps-cell ${side === 0 ? "sa" : "sb"}` }, el("div", { class: "pl-who" }, pairWho(r.seg)), el("div", { class: "pl-text" }, r.seg.text));
+        return el("div", { class: "ps-cell empty" });
+      };
+      const grid = el("div", { class: "pair-side" },
+        el("div", { class: "ps-h" }), ...ids.slice(0, 2).map((id) => el("div", { class: `ps-h ${sideOf(id)}` }, el("span", { class: `pbadge ${sideOf(id)}` }, id), " ", ((c.sides || []).find((s) => s && String(s.id) === id) || {}).label || "")),
+        slice.flatMap((r) => [el("div", { class: "ps-time" }, fmtClock(r.start)), cell(0, r), cell(1, r)]));
+      body.replaceChildren(...[windowNote(), from > 0 ? more(-1, from) : null, grid, to < rows.length ? more(1, rows.length - to) : null].filter(Boolean));
+      return;
+    }
+    // Narrow: one side at a time.
+    const pick = el("div", { class: "pair-pick", role: "tablist" }, ids.slice(0, 2).map((id) =>
+      el("button", { class: `seg-btn${phoneSide === id ? " on" : ""}`, type: "button", "aria-pressed": String(phoneSide === id), onclick: () => { phoneSide = id; paint(); } },
+        el("span", { class: `pbadge ${sideOf(id)}` }, id), " ", ((c.sides || []).find((s) => s && String(s.id) === id) || {}).label || "")));
+    const mine = slice.flatMap((r) => r.kind === "both" ? [{ seg: phoneSide === ids[0] ? r.a : r.b, both: true, start: r.start }] : r.kind === phoneSide ? [{ seg: r.seg, both: false, start: r.start }] : []);
+    const list = el("div", { class: "pair-lines" }, mine.map((x) => el("div", { class: `pl pl-one ${sideOf(phoneSide)}${x.both ? " also" : ""}` },
+      el("div", { class: "pl-meta" }, el("span", { class: "pl-time" }, fmtClock(Number(x.seg.start) || x.start)), el("span", { class: "pl-who" }, pairWho(x.seg)), x.both ? el("span", { class: "pl-also", title: "the other side says this too" }, `also in ${phoneSide === ids[0] ? ids[1] : ids[0]}`) : null),
+      el("div", { class: "pl-text" }, x.seg.text))));
+    if (!mine.length) list.append(el("div", { class: "empty-seg" }, "(nothing from this side in the window)"));
+    body.replaceChildren(...[pick, windowNote(), from > 0 ? more(-1, from) : null, list, to < rows.length ? more(1, rows.length - to) : null].filter(Boolean));
+  }
+  function paint() {
+    tabs.replaceChildren(...PAIR_VIEWS.map(([k, name]) => el("button", { class: `seg-btn${view === k ? " on" : ""}`, type: "button", role: "tab", "aria-selected": String(view === k), tabindex: "-1",
+      onclick: () => { view = k; store.set(`pairview:${L.taskId}`, k); paint(); } }, name)));
+    if (view === "side") paintSide(); else paintCombined(view === "full");
+  }
+  root.__repaint = paint;
+  paint();
+  const legend = el("div", { class: "pair-legend" },
+    el("span", {}, el("span", { class: "pbadge both" }, `${ids[0]}+${ids[1]}`), " said on both"),
+    el("span", {}, el("mark", { class: "pd pd-a" }, "words"), ` only in ${ids[0]}`),
+    el("span", {}, el("mark", { class: "pd pd-b" }, "words"), ` only in ${ids[1]}`));
+  root.append(pairHeadEl(c, ids, sideOf, win, ex, P.similarity(c, win)), tabs, legend, body);
+  return root;
+}
+// Side by side switches layout at 900px: repaint an open pair when crossing it.
+if (wideMQ) {
+  const repaint = () => { for (const p of document.querySelectorAll(".pair")) p.__repaint?.(); };
+  if (wideMQ.addEventListener) wideMQ.addEventListener("change", repaint); else if (wideMQ.addListener) wideMQ.addListener(repaint);
+}
+
 function relationText(c) {
   const g = c.gap_min != null ? `${Math.round(Number(c.gap_min))} min ` : "";
   if (c.relation === "overlapping") return "overlapping";
@@ -684,6 +849,7 @@ function actionBar(entry) {
       status,
       el("button", { class: "btn", type: "button", tabindex: "-1", title: "Previous card (k)", onclick: () => step(-1), disabled: L.pos === 0 && L.roundIdx === 0 }, "←", enter("k")),
       el("button", { class: "btn", type: "button", tabindex: "-1", title: "Skip for now: it comes back at the end of the wave", onclick: skipForNow }, "Skip ", enter(skipKey)),
+      el("button", { class: "btn m-only", type: "button", tabindex: "-1", title: "Next card (j)", "aria-label": "Next card", onclick: () => step(1), disabled: L.pos >= ids.length - 1 && L.roundIdx >= L.rounds.length - 1 }, "→"),
       cur || L.undo.length ? el("button", { class: "btn undo", type: "button", tabindex: "-1", title: "Undo your last label (u)", onclick: undo }, "↩", enter("u")) : null),
     note);
 }
@@ -830,7 +996,7 @@ function rerenderActionBar() {
   const id = currentId();
   const old = $(".actionbar");
   const entry = id && L.cache.get(id);
-  if (old && entry) old.replaceWith(actionBar(entry));
+  if (old && entry) { const bar = actionBar(entry); old.replaceWith(bar); App.dock(bar); }
 }
 
 async function setField(fid, value) {
