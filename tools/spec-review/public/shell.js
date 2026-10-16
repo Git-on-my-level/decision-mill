@@ -93,13 +93,15 @@ function taskRowEl(t) {
 /* ---------- router ---------- */
 function showView(mode) {
   App.mode = mode;
+  if (mode === "home") App.setTopbar("Decision Mill", App.config.projectName || "");
   $("#home-view").hidden = mode !== "home";
   $("#spec-view").hidden = mode !== "spec";
   $("#label-view").hidden = mode !== "label";
   $("#bucket-totals").hidden = mode !== "spec";
   document.body.dataset.mode = mode;
   if (mode !== "spec") Spec.close();
-  $("#app").classList.remove("nav-open");
+  setDrawer(false);
+  App.dock(null);
   for (const a of $$("#nav a")) {
     const h = a.getAttribute("href");
     a.classList.toggle("active", h === location.hash || (mode === "home" && h === "#/") ||
@@ -218,6 +220,11 @@ function applyTheme(t) {
   else delete document.documentElement.dataset.theme;
   $("#theme-toggle").textContent = t === "light" ? "☀" : t === "dark" ? "☾" : "◐";
   $("#theme-toggle").title = `theme: ${t || "system"} (click to change)`;
+  // The phone's browser chrome follows a forced theme too.
+  for (const m of $$('meta[name="theme-color"]')) {
+    if (!m.dataset.content) m.dataset.content = m.content;
+    m.content = t === "light" ? "#f6f5f1" : t === "dark" ? "#14171d" : m.dataset.content;
+  }
 }
 $("#theme-toggle").addEventListener("click", () => {
   const order = [null, "light", "dark"];
@@ -226,13 +233,36 @@ $("#theme-toggle").addEventListener("click", () => {
   applyTheme(next);
 });
 applyTheme(store.get("theme"));
-$("#menu-toggle").addEventListener("click", () => $("#app").classList.toggle("nav-open"));
+
+/* ---------- narrow screens: the sidebar is a slide-over drawer ---------- */
+function setDrawer(open) {
+  const app = $("#app");
+  const was = app.classList.contains("nav-open");
+  app.classList.toggle("nav-open", open);
+  $("#drawer-backdrop").hidden = !open;
+  $("#menu-toggle").setAttribute("aria-expanded", String(open));
+  if (open && !was) {
+    // Bring the current spec or task into view in a long list.
+    const active = $("#nav a.active.spec-row, #nav a.active.task-row");
+    if (active) active.scrollIntoView({ block: "nearest" });
+  }
+}
+const drawerOpen = () => $("#app").classList.contains("nav-open");
+$("#menu-toggle").addEventListener("click", () => setDrawer(!drawerOpen()));
+$("#topbar-title").addEventListener("click", () => setDrawer(true));
+$("#drawer-close").addEventListener("click", () => setDrawer(false));
+$("#drawer-backdrop").addEventListener("click", () => setDrawer(false));
+$("#topbar-search").addEventListener("click", openSearch);
+// Picking the spec already open changes no hash, so close the drawer here too.
+$("#nav").addEventListener("click", (e) => { if (e.target.closest("a")) setDrawer(false); });
+$("#search-trigger").addEventListener("click", () => setDrawer(false));
 
 /* ---------- keyboard: one dispatcher, mode handlers below it ---------- */
 document.addEventListener("keydown", (e) => {
   if (!helpModal.hidden) { if (e.key === "Escape" || e.key === "?") { e.preventDefault(); closeHelp(); } return; }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openSearch(); return; }
   if (!searchModal.hidden) return;
+  if (e.key === "Escape" && drawerOpen()) { e.preventDefault(); setDrawer(false); return; }
   if (isTyping()) {
     if (e.key === "Escape") document.activeElement.blur();
     return;

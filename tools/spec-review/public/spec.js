@@ -23,10 +23,20 @@ const state = {
   cfg: null,
   cfgs: Object.create(null), // setId -> cfg, for labels in search results
   instrOpen: false,
+  title: "",
+  // Decided items fold to one line; these are the ones the reviewer unfolded.
+  expanded: new Set(),
+  // Items decided in this session, most recent last: `u` undoes the last one
+  // even after the focus has moved on (a phone advances after each verdict).
+  undoStack: [],
   // The locator scheme is a per-project knob (see FORMAT.md) read from
   // App.config at boot, so nothing in this file may hardcode it.
   get config() { return App.config; },
 };
+
+const VL = globalThis.ViewLogic;
+// Open/closed of the Sources and earlier-notes disclosures, remembered per browser.
+const disc = VL.disclosureStore((() => { try { return window.localStorage; } catch { return null; } })());
 
 const KIND_LABEL = { divergence: "DIV", invariant: "INV", "failure-case": "FC", unknown: "UNK", feature: "FEAT", decision: "DEC", general: "GEN" };
 
@@ -149,9 +159,14 @@ function renderInstructions() {
     <td>${esc(x.hint || "")}${x.requires_detail ? ` <em class="req">— needs a detail in the box first</em>` : ""}${x.kinds ? ` <span class="muted">(${esc(x.kinds.join(", "))} only)</span>` : ""}</td></tr>`).join("");
   d.hidden = false;
   d.open = state.instrOpen;
+  // Opened automatically on a first visit: clamped to a few lines on a phone so
+  // the first card still shows; a tap on the text reads it all.
+  d.classList.toggle("auto", seen === null);
   d.innerHTML = `<summary>Instructions<span class="hint"> — i to show or hide</span></summary>
     ${cfg.instructions ? `<div class="prose">${md(cfg.instructions)}</div>` : ""}
     <table class="verdict-legend" aria-label="Verdicts">${legend}</table>`;
+  const prose = d.querySelector(".prose");
+  if (prose) prose.onclick = () => d.classList.remove("auto");
   d.ontoggle = () => {
     if (d.open === state.instrOpen) return;
     state.instrOpen = d.open;
@@ -187,6 +202,7 @@ async function selectSpec(slug) {
   const tok = ++selectToken;
   state.slug = slug;
   state.focusId = null;
+  state.expanded.clear();
   const data = await api(`api/spec/${encodeURIComponent(slug)}?${setQ()}`);
   if (tok !== selectToken) return; // a later click won; don't paint stale data
   state.items = data.items;
@@ -197,9 +213,18 @@ async function selectSpec(slug) {
     ? `<div class="${cls}">${esc(label)}${arr.map((e) => `<div>· ${esc(e)}</div>`).join("")}</div>` : "";
   const cfg = state.cfg || {};
   const pos = state.specs.findIndex((s) => s.slug === slug);
+  state.title = fm.title || slug;
+  // File, baseline and status are for whoever maintains the spec, not for the
+  // decider: muted on a wide screen, dropped on a phone.
+  const metaBits = [
+    `<span class="m-file">${esc(slug)}.md</span>`,
+    state.specs.length > 1 && pos !== -1 ? `<span class="m-pos">spec ${pos + 1} of ${state.specs.length}</span>` : "",
+    fm.baseline ? `<span class="m-extra">baseline ${esc(String(fm.baseline).slice(0, 10))}</span>` : "",
+    `<span class="m-extra">status ${esc(fm.status || "?")}</span>`,
+  ].filter(Boolean).join(`<span class="m-sep"> · </span>`);
   $("#spec-header").innerHTML = `
-    <h2>${esc(fm.title || slug)}</h2>
-    <div class="meta">${esc(slug)}.md${state.specs.length > 1 && pos !== -1 ? ` · spec ${pos + 1} of ${state.specs.length}` : ""} · baseline ${esc(String(fm.baseline || "").slice(0, 10))} · status ${esc(fm.status || "?")}
+    <h2>${esc(state.title)}</h2>
+    <div class="meta">${metaBits}
       ${cfg.instructions || cfg.customDecisions ? `<button id="spec-instr-btn" class="rb-btn${state.instrOpen ? " on" : ""}" type="button" title="Instructions (i)">Instructions <kbd>i</kbd></button>` : ""}</div>
     ${list("parse-errors", "decision-mill.yaml errors:", cfg.errors || [])}
     ${list("spec-warnings", "decision-mill.yaml warnings:", cfg.warnings || [])}
@@ -226,33 +251,68 @@ const KIND_FILTERS = [
   ["failure-case", "Failure cases"], ["unknown", "Unknowns"], ["feature", "Features"], ["decision", "Decisions"],
 ];
 
+// Does item `it` fall under status filter `status` and kind filter `kind`?
+function matches(it, status, kind) {
+  const st = it.meta.status || "open";
+  const deferred = it.meta.decision === "defer";
+  // GEN items are notes containers, not pending work — visible under All only.
+  if (it.kind === "general" && status !== "all") return false;
+  if (status === "open") { if (st !== "open" || deferred) return false; }
+  else if (status === "deferred") { if (!deferred || st === "team") return false; } // team-parked wins; defer verdict resurfaces on un-park
+  else if (status !== "all" && st !== status) return false;
+  if (kind !== "all" && it.kind !== kind) return false;
+  return true;
+}
+
+// Status chips with counts on a wide screen; one compact <select> on a phone
+// (CSS shows one or the other). The kind <select> appears only when the spec
+// mixes kinds — a register of DEC items has nothing to filter.
 function renderFilters() {
   const el = $("#filters");
   el.innerHTML = "";
-  for (const [key, label] of STATUS_FILTERS) {
+  const count = (key) => state.items.filter((it) => matches(it, key, state.kind)).length;
+  const statuses = STATUS_FILTERS.filter(([key]) => key === "all" || key === "open" || key === "decided" || key === state.status || count(key) > 0);
+  if (state.status === "needs-metrics") statuses.push(["needs-metrics", "Needs metrics"]);
+  for (const [key, label] of statuses) {
     const b = document.createElement("button");
     b.className = "filter" + (state.status === key ? " on" : "");
-    b.textContent = label;
+    b.type = "button";
+    const n = count(key);
+    b.innerHTML = `${esc(label)}${key === "all" ? "" : ` <small>${n}</small>`}`;
     b.setAttribute("aria-pressed", String(state.status === key));
     b.onclick = () => { state.status = key; renderFilters(); renderItems(); };
     el.appendChild(b);
   }
-  const sel = document.createElement("select");
-  sel.className = "kind-select";
-  sel.setAttribute("aria-label", "Filter by kind");
-  // Only offer kinds this spec has (plus the current one), so a decision register
-  // is not a list of empty filters.
-  const present = new Set(state.items.map((it) => it.kind));
-  for (const [key, label] of KIND_FILTERS) {
-    if (key !== "all" && key !== state.kind && !present.has(key)) continue;
+  const ssel = document.createElement("select");
+  ssel.className = "status-select";
+  ssel.setAttribute("aria-label", "Filter by status");
+  for (const [key, label] of statuses) {
     const o = document.createElement("option");
     o.value = key;
-    o.textContent = label;
-    sel.appendChild(o);
+    o.textContent = key === "all" ? `All (${count(key)})` : `${label} (${count(key)})`;
+    ssel.appendChild(o);
   }
-  sel.value = state.kind;
-  sel.onchange = () => { state.kind = sel.value; renderFilters(); renderItems(); };
-  el.appendChild(sel);
+  ssel.value = state.status;
+  ssel.onchange = () => { state.status = ssel.value; renderFilters(); renderItems(); };
+  el.appendChild(ssel);
+  // Only offer kinds this spec has (plus the current one), so a decision register
+  // is not a list of empty filters.
+  const present = new Set(state.items.filter((it) => it.kind !== "general").map((it) => it.kind));
+  if (present.size > 1 || state.kind !== "all") {
+    const sel = document.createElement("select");
+    sel.className = "kind-select";
+    sel.setAttribute("aria-label", "Filter by kind");
+    for (const [key, label] of KIND_FILTERS) {
+      if (key !== "all" && key !== state.kind && !present.has(key)) continue;
+      const o = document.createElement("option");
+      o.value = key;
+      o.textContent = label;
+      sel.appendChild(o);
+    }
+    sel.value = state.kind;
+    sel.onchange = () => { state.kind = sel.value; renderFilters(); renderItems(); };
+    el.appendChild(sel);
+  }
   renderProgress();
 }
 
@@ -262,6 +322,7 @@ function renderProgress() {
   const metrics = decidable.filter((i) => (i.meta.status || "open") === "needs-metrics").length;
   const open = decidable.filter((i) => (i.meta.status || "open") === "open" && i.meta.decision !== "defer").length;
   const next = open ? null : nextOpenSpec();
+  if (App.mode === "spec") App.setTopbar(state.title, `${decided}/${decidable.length} decided${open ? ` · ${open} open` : ""}`);
   const el = $("#progress");
   el.innerHTML = `${decided}/${decidable.length} decided`
     + (metrics ? ` · <a href="#" class="metrics-link${state.status === "needs-metrics" ? " on" : ""}">${metrics} needs metrics</a>` : "")
@@ -278,26 +339,23 @@ function renderProgress() {
 }
 
 function visibleItems() {
-  return state.items.filter((it) => {
-    const st = it.meta.status || "open";
-    const deferred = it.meta.decision === "defer";
-    // GEN items are notes containers, not pending work — visible under All only.
-    if (it.kind === "general" && state.status !== "all") return false;
-    if (state.status === "open") { if (st !== "open" || deferred) return false; }
-    else if (state.status === "deferred") { if (!deferred || st === "team") return false; } // team-parked wins; defer verdict resurfaces on un-park
-    else if (state.status !== "all" && st !== state.status) return false;
-    if (state.kind !== "all" && it.kind !== state.kind) return false;
-    return true;
-  });
+  return state.items.filter((it) => matches(it, state.status, state.kind));
 }
+
+// Still waiting for a first verdict (deferred and parked items are not).
+const isPending = (it) => Boolean(it) && DECIDABLE(it) && (it.meta.status || "open") === "open" && !it.meta.decision;
 
 /* ---------- items ---------- */
 function renderItems() {
   const wrap = $("#items");
   wrap.innerHTML = "";
   const items = visibleItems();
-  if (!items.length) { wrap.innerHTML = `<div class="empty">Nothing under this filter.</div>`; return; }
+  if (!items.length) { wrap.innerHTML = `<div class="empty">Nothing under this filter.</div>`; syncDock(); return; }
   for (const it of items) wrap.appendChild(renderItem(it));
+  // A phone always has a current item — the bottom bar acts on it.
+  if (isPhone() && !items.some((it) => it.id === state.focusId)) {
+    state.focusId = (items.find(isPending) || items[0]).id;
+  }
   applyFocus();
 }
 
@@ -330,8 +388,7 @@ function stampHtml(meta) {
   if (!meta.decision) return "";
   const decision = String(meta.decision);
   const label = verdictLabel(decision);
-  return `<div class="stamp v-${verdictCls(decision)}">${esc(label)}
-    <small>${esc(meta.decided_at || "")}</small></div>`;
+  return `<span class="stamp v-${verdictCls(decision)}" title="${esc(meta.decided_at ? `decided ${meta.decided_at}` : "decided")}">${esc(label)}${meta.decided_at ? ` <small>${esc(String(meta.decided_at).slice(5, 10))}</small>` : ""}</span>`;
 }
 
 // unify-on-<slug>: keep the machine value in the documented vocabulary and put the
@@ -454,87 +511,121 @@ function metricsHtml(metrics) {
   return `<div class="metrics">${stats}${src ? `<div class="msrc">${esc(src)}</div>` : ""}</div>`;
 }
 
+// One row of the notes timeline. Audit notes ("decision: toss — why") render with
+// a colored verdict tag instead of the raw prefix; status flips render muted.
+function noteRowHtml(n) {
+  const c = VL.classifyNote(n.text);
+  let cls = "note-row", body;
+  if (c.type === "decision") body = `<span class="vtag v-${verdictCls(c.verdict)}">${esc(verdictLabel(c.verdict))}</span>${c.rest ? esc(c.rest) : ""}`;
+  // Agent recommendations ("rec: toss — why") get the same translated verdict
+  // chip as decisions, prefixed REC, so the label matches the buttons above.
+  else if (c.type === "rec") body = `<span class="vtag v-rec">REC · ${esc(verdictLabel(c.verdict))}</span>${c.rest ? esc(c.rest) : ""}`;
+  else if (c.type === "sys") { cls += " sys"; body = esc(c.rest); }
+  else body = esc(c.rest);
+  // Text gets the full row; timestamp (and author, only when it isn't the
+  // reviewer) sits in a small line underneath.
+  const metaBits = [n.at, n.by && n.by !== who() ? n.by : null].filter(Boolean).map(esc).join(" · ");
+  return `<div class="${cls}"><div class="ntext">${body}</div>${metaBits ? `<div class="nmeta">${metaBits}</div>` : ""}</div>`;
+}
+
+// A short placeholder on a phone, where the box is one line tall.
+function placeholderFor(isGeneral) {
+  if (!isPhone()) return answerPlaceholder(isGeneral);
+  const a = answerDef();
+  return isGeneral || !a ? "Note…" : `Your answer… (records ${a.label})`;
+}
+
+// The card shows what a decider needs — id, title, explanation, prose — and puts
+// the rest (kind, proposed verdict, status, the needs-metrics and team flags)
+// behind a "⋯" menu. Sources fold into one disclosure; long note histories fold
+// to the last two; a decided item folds to one line until it is tapped.
 function renderItem(it) {
   const meta = it.meta;
   const el = document.createElement("article");
   el.className = "item";
   el.dataset.status = meta.status || "open";
   el.dataset.id = it.id;
-  // One timeline for everything the reviewer wrote, in order, next to the input.
-  // Audit notes ("decision: toss — why") render with a colored verdict tag instead
-  // of the raw prefix; status flips and clears render muted.
-  const notes = (meta.notes || []).map((n) => {
-    const t = String(n.text || "");
-    const m = t.match(/^decision: (\S+)(?: — ([\s\S]+))?$/);
-    // Agent recommendations ("rec: toss — why") get the same translated verdict
-    // chip as decisions, prefixed REC, so the label matches the buttons above.
-    const r = t.match(/^rec: (\S+)(?: — ([\s\S]+))?$/);
-    let cls = "note-row", body;
-    if (m) {
-      body = `<span class="vtag v-${verdictCls(m[1])}">${esc(verdictLabel(m[1]))}</span>${m[2] ? esc(m[2]) : ""}`;
-    } else if (r) {
-      body = `<span class="vtag v-rec">REC · ${esc(verdictLabel(r[1]))}</span>${r[2] ? esc(r[2]) : ""}`;
-    } else if (/^status: /.test(t) || t === "decision cleared") {
-      cls += " sys";
-      body = esc(t);
-    } else {
-      body = esc(t);
-    }
-    // Text gets the full row; timestamp (and author, only when it isn't the
-    // reviewer) sits in a small line underneath.
-    const metaBits = [n.at, n.by && n.by !== who() ? n.by : null].filter(Boolean).map(esc).join(" · ");
-    return `<div class="${cls}"><div class="ntext">${body}</div>${metaBits ? `<div class="nmeta">${metaBits}</div>` : ""}</div>`;
-  }).join("");
   const isGeneral = !DECIDABLE(it);
-  const isMetrics = (meta.status || "open") === "needs-metrics";
+  const status = meta.status || "open";
+  const isMetrics = status === "needs-metrics";
+  const isTeam = status === "team";
+  const decided = VL.isDecided(meta);
+  const collapsed = VL.collapsedByDefault(it, state.expanded);
+  el.classList.toggle("collapsed", collapsed);
+  el.classList.toggle("decided", decided);
+
+  const { earlier, recent } = VL.splitNotes(meta.notes);
+  const notesHtml = (earlier.length
+    ? `<details class="older-notes"${disc.get("notes") ? " open" : ""}><summary>${earlier.length} earlier note${earlier.length === 1 ? "" : "s"}</summary>${earlier.map(noteRowHtml).join("")}</details>` : "")
+    + recent.map(noteRowHtml).join("");
   // The set's verdict buttons, in declared order. Only divergences can be unified —
   // there is nothing to converge on for an invariant, a failure case or an unknown.
   const verdictButtons = decisions().filter((d) => appliesTo(d, it)).map((d) =>
     `<button class="btn ${TONE_BTN[d.tone] || "ghost"}" data-d="${esc(d.id)}" type="button"${d.hint || d.key ? ` title="${esc([d.hint, d.key ? `key ${d.key}` : ""].filter(Boolean).join(" — "))}"` : ""}>${esc(d.label)}${d.key ? `<kbd>${esc(d.key)}</kbd>` : ""}</button>`);
+  const sum = VL.decidedSummary(meta);
+  const facts = VL.itemFacts(it, KIND_LABEL);
+  const conf = meta.confidence ? `<span class="conf conf-${esc(slugify(meta.confidence))}" title="the extractor's confidence in its recommendation">${esc(meta.confidence)} confidence</span>` : "";
   el.innerHTML = `
+    ${decided ? `<button class="item-summary" type="button" aria-expanded="false" title="Show the whole item">
+      <span class="vtag v-${verdictCls(sum.decision)}">${esc(verdictLabel(sum.decision))}</span>
+      <span class="sum-title">${esc(it.title)}</span>
+      ${sum.detail ? `<span class="sum-detail">${esc(sum.detail)}</span>` : ""}
+      <span class="sum-id">${esc(it.id)}</span>
+    </button>` : ""}
     <div class="body">
       <div class="item-head">
-        <span class="item-id">${esc(it.id)}</span>
-        <span class="item-title">${esc(it.title)}</span>
-        <span class="chips">
-          <span class="chip">${esc(KIND_LABEL[it.kind] || it.kind || "?")}</span>
-          ${meta.proposed && meta.proposed !== "n/a" ? `<span class="chip ${meta.proposed === "toss" || meta.proposed === "change" ? "proposed-toss" : ""}">→ ${esc(meta.proposed === "toss" ? "change" : meta.proposed)}</span>` : ""}
-          ${meta.confidence ? `<span class="chip conf-${esc(slugify(meta.confidence))}">${esc(meta.confidence)}</span>` : ""}
-          ${isMetrics ? "" : `<span class="chip">${esc(meta.status || "open")}</span>`}
-          ${isGeneral ? "" : `<button class="chip mchip${isMetrics ? " on" : ""}" data-status="${isMetrics ? "open" : "needs-metrics"}"
-            type="button" aria-pressed="${isMetrics}" title="flag for the metrics agent — not a verdict">needs metrics</button>`}
-        </span>
+        <div class="item-top">
+          <span class="top-info">
+            <span class="item-id">${esc(it.id)}</span>
+            ${conf}
+            ${isMetrics ? `<span class="flag flag-metrics">needs metrics</span>` : ""}
+            ${isTeam ? `<span class="flag flag-team">team</span>` : ""}
+            ${stampHtml(meta)}
+          </span>
+          ${decided ? `<button class="icon-btn" data-collapse type="button" title="Fold to one line" aria-label="Fold to one line">▴</button>` : ""}
+          <details class="more">
+            <summary class="icon-btn" title="More" aria-label="More about this item">⋯</summary>
+            <div class="more-menu">
+              <dl class="facts">${facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
+              ${isGeneral ? "" : `
+              <button class="menu-item" data-status="${isMetrics ? "open" : "needs-metrics"}" type="button" aria-pressed="${isMetrics}"
+                title="flag for the metrics agent — not a verdict">${isMetrics ? "✓ Needs metrics — clear" : "Flag: needs metrics"}</button>
+              <button class="menu-item" data-team type="button" aria-pressed="${isTeam}"
+                title="park for the live team walkthrough — not a verdict">${isTeam ? "✓ Parked for team — unpark" : "Park for team walkthrough"}</button>`}
+            </div>
+          </details>
+        </div>
+        <h3 class="item-title">${esc(it.title)}</h3>
       </div>
       ${typeof meta.explanation === "string" && meta.explanation.trim()
-        ? ((meta.status === "team")
+        ? (isTeam
           ? `<div class="explanation agenda"><div class="agenda-eyebrow">on the table</div>${esc(meta.explanation.trim())}</div>`
           : `<p class="explanation">${esc(meta.explanation.trim())}</p>`) : ""}
-      ${stampHtml(meta)}
       ${metricsHtml(meta.metrics)}
-      ${meta.status === "team"
+      ${isTeam
         ? `<details class="deep-dive"><summary>deep dive — full analysis &amp; evidence</summary><div class="prose">${md(it.prose)}</div></details>`
         : `<div class="prose">${md(it.prose)}</div>`}
-      <div class="evidence" hidden></div>
-      ${isGeneral ? "" : `
-      <div class="actions">
-        <span class="lbl">decide</span>
-        ${verdictButtons.filter((b) => !/data-d="unify"/.test(b)).join("\n        ")}
-        <button class="btn ghost b-team" data-team type="button" aria-pressed="${(meta.status || "open") === "team"}"
-          title="park for the live team walkthrough — not a verdict">${(meta.status || "open") === "team" ? "✓ Team" : "Team"}</button>
-        ${verdictButtons.filter((b) => /data-d="unify"/.test(b)).join("")}
-        ${meta.decision ? `<button class="btn undo" data-undecide type="button">↩ Undo decision</button>` : ""}
-      </div>
-      <div class="unify-row" hidden>
-        <span class="pending mono">unify-on-</span>
-        <input placeholder="target — e.g. macos, server, windows" spellcheck="false">
-        <button class="btn b-unify" data-unify-go type="button">Unify</button>
-        <button class="btn ghost" data-unify-cancel type="button">Cancel</button>
-      </div>
-      <div class="detail-hint" hidden></div>`}
-      <div class="notes">
-        ${notes}
+      <details class="sources" hidden${disc.get("sources") ? " open" : ""}><summary>Sources <span class="n"></span></summary><div class="evidence"></div></details>
+      ${notesHtml ? `<div class="notes">${notesHtml}</div>` : ""}
+      <div class="decide">
+        ${isGeneral ? "" : `
+        <div class="actions">
+          <span class="lbl">decide</span>
+          ${verdictButtons.filter((b) => !/data-d="unify"/.test(b)).join("\n          ")}
+          <button class="btn ghost b-team" data-team type="button" aria-pressed="${isTeam}"
+            title="park for the live team walkthrough — not a verdict">${isTeam ? "✓ Team" : "Team"}</button>
+          ${verdictButtons.filter((b) => /data-d="unify"/.test(b)).join("")}
+          ${meta.decision ? `<button class="btn undo" data-undecide type="button" title="Undo this decision (u)">↩ Undo<span class="undo-long"> decision</span></button>` : ""}
+        </div>
+        <div class="unify-row" hidden>
+          <span class="pending mono">unify-on-</span>
+          <input placeholder="target — e.g. macos, server, windows" spellcheck="false">
+          <button class="btn b-unify" data-unify-go type="button">Unify</button>
+          <button class="btn ghost" data-unify-cancel type="button">Cancel</button>
+        </div>
+        <div class="detail-hint" hidden></div>`}
         <div class="note-add">
-          <textarea placeholder="${esc(answerPlaceholder(isGeneral))}" spellcheck="false"></textarea>
+          <textarea rows="1" spellcheck="false" enterkeyhint="enter"></textarea>
           ${!isGeneral && answerDef() ? `<button class="btn b-answer" data-answer type="button" title="record the typed text as your answer (${esc(answerDef().label)}) — ⌘/Ctrl+Enter">Answer <kbd>⌘↵</kbd></button>` : ""}
           <button class="btn ghost note-only" data-note type="button" title="save the text as a note without deciding${!isGeneral && answerDef() ? " — Shift+⌘/Ctrl+Enter" : " — ⌘/Ctrl+Enter"}">${!isGeneral && answerDef() ? "Note only" : "Add note"}</button>
         </div>
@@ -542,20 +633,46 @@ function renderItem(it) {
     </div>`;
 
   el.addEventListener("mousedown", () => setFocus(it.id));
+  const decideWrap = el.querySelector(".decide");
+  // The decide block may be docked in the phone's bottom bar, outside the card,
+  // so everything below holds direct references instead of querying `el` later.
+  decideWrap.__card = el;
+  el.__decide = decideWrap;
+
+  // Folding: a decided item is one line until tapped; ▴ folds it back.
+  const summaryBtn = el.querySelector(".item-summary");
+  if (summaryBtn) summaryBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    state.expanded.add(it.id);
+    state.focusId = it.id;
+    patchItem(it.id);
+  });
+  const foldBtn = el.querySelector("[data-collapse]");
+  if (foldBtn) foldBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    state.expanded.delete(it.id);
+    patchItem(it.id);
+  });
+  for (const d of el.querySelectorAll("details.sources, details.older-notes")) {
+    const key = d.classList.contains("sources") ? "sources" : "notes";
+    d.addEventListener("toggle", () => disc.set(key, d.open));
+  }
 
   // Prose first: linkifying it tells us which citations the evidence list would only
   // be repeating. Anything the prose does not mention still gets its own row.
   const cited = linkifyLocators(el.querySelector(".prose"));
+  const sources = el.querySelector(".sources");
   const evWrap = el.querySelector(".evidence");
   const evidence = (meta.evidence || [])
     .map((ev, i) => ({ ev, i }))
     .filter(({ ev }) => ev && ev.locator && !cited.has(evKey(String(ev.locator), ev.lines)));
   if (evidence.length) {
-    evWrap.hidden = false;
+    sources.hidden = false;
+    sources.querySelector(".n").textContent = `(${evidence.length})`;
     evWrap.innerHTML = evidence.map(({ ev, i }) => `
       <button class="ev" data-ev="${i}" type="button">
         <span class="loc">${esc(ev.locator)}${ev.lines != null ? `:${esc(ev.lines)}` : ""}</span>
-        ${ev.note ? `<span class="note">${esc(ev.note)}</span>` : ""}
+        ${ev.note ? `<span class="ev-note">${esc(ev.note)}</span>` : ""}
       </button>`).join("");
     for (const evBtn of evWrap.querySelectorAll(".ev")) {
       evBtn.addEventListener("click", (e) => {
@@ -566,11 +683,17 @@ function renderItem(it) {
   }
 
   /* ---- notes / rationale: the item's one and only text field ---- */
-  const ta = el.querySelector(".note-add textarea");
-  const isGeneralItem = !DECIDABLE(it);
-  const noteBtn = el.querySelector("[data-note]");
-  if (state.drafts[it.id]) ta.value = state.drafts[it.id];
-  ta.addEventListener("input", () => { state.drafts[it.id] = ta.value; });
+  const ta = decideWrap.querySelector(".note-add textarea");
+  ta.placeholder = placeholderFor(isGeneral);
+  const noteBtn = decideWrap.querySelector("[data-note]");
+  // One line until there is more to say; grows with the text up to a cap.
+  const grow = () => {
+    ta.style.height = "auto";
+    if (ta.value) ta.style.height = `${VL.growHeight(ta.scrollHeight + 2, { max: isPhone() ? 160 : 240 })}px`;
+    else ta.style.height = "";
+  };
+  if (state.drafts[it.id]) { ta.value = state.drafts[it.id]; requestAnimationFrame(grow); }
+  ta.addEventListener("input", () => { state.drafts[it.id] = ta.value; grow(); });
   // Whatever is typed here rides along with the next verdict as decision_detail.
   // Dropping the draft *before* the write's re-render is what stops the text from
   // reappearing in the box and inviting a second save; it is restored if the write
@@ -583,7 +706,7 @@ function renderItem(it) {
   const restoreText = (text) => { if (text) state.drafts[it.id] = text; };
 
   /* ---- decision flow: one click, no confirm stage ---- */
-  const hint = el.querySelector(".detail-hint");
+  const hint = decideWrap.querySelector(".detail-hint");
   // kind "note" = neutral guidance, "warn" = you must fix something.
   const showHint = (msg, kind = "warn") => {
     if (!hint) return;
@@ -591,7 +714,7 @@ function renderItem(it) {
     hint.className = `detail-hint${msg && kind === "note" ? " note" : ""}`;
     hint.hidden = !msg;
   };
-  const unifyRow = el.querySelector(".unify-row");
+  const unifyRow = decideWrap.querySelector(".unify-row");
   const unifyInput = unifyRow && unifyRow.querySelector("input");
   const closeUnify = () => {
     if (!unifyRow) return;
@@ -601,6 +724,7 @@ function renderItem(it) {
   };
   el.__closeUnify = closeUnify;
 
+  const writeButtons = [...decideWrap.querySelectorAll("[data-d], [data-unify-go]")];
   let writing = false; // one-click deciding must not double-write on a double-click
   const decide = async (decision, detail) => {
     // "Change" (stored: change) never means delete. Auto-prefix the reviewer's detail
@@ -611,17 +735,17 @@ function renderItem(it) {
     }
     if (writing) return;
     writing = true;
-    for (const b of el.querySelectorAll("[data-d], [data-unify-go]")) b.disabled = true;
+    for (const b of writeButtons) b.disabled = true;
     try {
       const ok = await act(it.id, { action: "decision", decision, decision_detail: detail || null, by: who() });
       if (!ok) restoreText(detail);
     } finally {
       writing = false;
-      for (const b of el.querySelectorAll("[data-d], [data-unify-go]")) b.disabled = false;
+      for (const b of writeButtons) b.disabled = false;
     }
   };
 
-  for (const btn of el.querySelectorAll("[data-d]")) {
+  for (const btn of decideWrap.querySelectorAll("[data-d]")) {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       // Unify is the one verdict that needs a target, so it gets a small inline
@@ -671,9 +795,9 @@ function renderItem(it) {
   }
 
   // Team is a parking lot, not a verdict: it toggles status team <-> open and
-  // saves any typed note first so the discussion context isn't lost.
-  const teamBtn = el.querySelector("[data-team]");
-  if (teamBtn) teamBtn.addEventListener("click", async (e) => {
+  // saves any typed note first so the discussion context isn't lost. It lives in
+  // the actions row on a wide screen and in the ⋯ menu everywhere.
+  for (const teamBtn of el.querySelectorAll("[data-team]")) teamBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
     teamBtn.disabled = true;
     try {
@@ -692,7 +816,7 @@ function renderItem(it) {
     finally { statusBtn.disabled = false; }
   });
 
-  const und = el.querySelector("[data-undecide]");
+  const und = decideWrap.querySelector("[data-undecide]");
   if (und) und.addEventListener("click", async (e) => {
     e.stopPropagation();
     und.disabled = true;
@@ -715,10 +839,10 @@ function renderItem(it) {
   noteBtn.addEventListener("click", (e) => { e.stopPropagation(); addNote(); });
 
   /* ---- typed answer: the text itself is the verdict's detail ---- */
-  const answerBtn = el.querySelector("[data-answer]");
+  const answerBtn = decideWrap.querySelector("[data-answer]");
   const answer = () => {
     const a = answerDef();
-    if (!a || isGeneralItem) return addNote();
+    if (!a || isGeneral) return addNote();
     if (!ta.value.trim()) {
       showHint("Type your answer first, or press a verdict key.");
       ta.focus();
@@ -751,12 +875,19 @@ async function act(id, body) {
     const res = await postJSON(`api/spec/${encodeURIComponent(state.slug)}/item/${encodeURIComponent(id)}?${setQ()}`, body);
     const i = state.items.findIndex((it) => it.id === id);
     if (i !== -1) state.items[i] = res.item;
+    if (body.action === "decision") {
+      // A fresh verdict folds the item to one line, so the remaining work shows.
+      state.expanded.delete(id);
+      state.undoStack = state.undoStack.filter((x) => x !== id).concat(id);
+    }
     patchItem(id);
     renderProgress();
     loadSpecs();
+    if (body.action === "decision" && isPhone()) advanceAfter(id);
     return true;
   } catch (e) {
-    alert(`Write failed: ${e.message}`);
+    // A toast, not alert(): a modal on a phone hides what was being decided.
+    toast(`Write failed: ${e.message}`, "err");
     return false;
   }
 }
@@ -840,7 +971,7 @@ function closeCode() {
   $("#app").classList.remove("with-code");
 }
 
-/* ---------- keyboard ---------- */
+/* ---------- focus, the phone's bottom bar, swipes ---------- */
 function setFocus(id) {
   state.focusId = id;
   applyFocus();
@@ -850,16 +981,77 @@ function applyFocus() {
   for (const el of document.querySelectorAll("#items .item")) {
     el.classList.toggle("focused", el.dataset.id === state.focusId);
   }
+  syncDock();
+}
+
+const itemEls = () => Array.from(document.querySelectorAll("#items .item"));
+const itemEl = (id) => document.querySelector(`#items .item[data-id="${CSS.escape(id)}"]`);
+// A part of an item's decide block, which may be docked outside the card.
+const partOf = (el, sel) => (el && (el.querySelector(sel) || el.__decide?.querySelector(sel))) || null;
+
+// Scrolling on a phone moves the focus to the card under the toolbar, so the bar
+// always acts on the card being read. Paused right after a programmatic jump and
+// while the reviewer types in the bar.
+let followPausedUntil = 0;
+function scrollToItem(el) {
+  followPausedUntil = Date.now() + 800;
+  el.scrollIntoView({ block: isPhone() ? "start" : "center" });
 }
 
 function moveFocus(delta) {
-  const els = Array.from(document.querySelectorAll("#items .item"));
+  const els = itemEls();
   if (!els.length) return;
   const cur = els.findIndex((el) => el.dataset.id === state.focusId);
-  const next = cur === -1 ? (delta > 0 ? 0 : els.length - 1)
-    : Math.min(els.length - 1, Math.max(0, cur + delta));
+  const next = VL.stepIndex(els.length, cur, delta);
   setFocus(els[next].dataset.id);
-  els[next].scrollIntoView({ block: "center" });
+  scrollToItem(els[next]);
+}
+
+// After a verdict on a phone: on to the next item still waiting for one.
+function advanceAfter(id) {
+  const ids = itemEls().map((e) => e.dataset.id);
+  const next = VL.nextPending(ids, id, (x) => isPending(state.items.find((it) => it.id === x)));
+  if (!next) { toast("Nothing left to decide under this filter"); syncDock(); return; }
+  setFocus(next);
+  const el = itemEl(next);
+  if (el) scrollToItem(el);
+}
+
+function followScroll() {
+  if (!isPhone() || App.mode !== "spec" || Date.now() < followPausedUntil) return;
+  if ($("#mbar").contains(document.activeElement)) return;
+  const y = $("#toolbar").getBoundingClientRect().bottom + 24;
+  const hit = itemEls().find((el) => el.getBoundingClientRect().bottom > y);
+  if (hit && hit.dataset.id !== state.focusId) setFocus(hit.dataset.id);
+}
+
+// On a phone the focused item's decide block (verdicts, unify, hint, answer box)
+// moves into the fixed bottom bar, within thumb reach; it moves back into its
+// card when the focus moves on or the screen widens. The same elements, so
+// drafts, hints and handlers come along.
+function syncDock() {
+  const bar = $("#mbar"), slot = $("#mbar-slot");
+  if (!bar || !slot) return;
+  const phone = isPhone() && App.mode === "spec";
+  const focused = phone && state.focusId ? itemEl(state.focusId) : null;
+  for (const d of [...slot.children]) {
+    if (focused && d.__card === focused) continue;
+    const home = d.__card && d.__card.isConnected && d.__card.querySelector(".body");
+    if (home) home.append(d); else d.remove();
+  }
+  const els = phone ? itemEls() : [];
+  bar.hidden = !els.length;
+  if (bar.hidden) { App.dock(null); return; }
+  if (focused && focused.__decide && focused.__decide.parentElement !== slot) slot.append(focused.__decide);
+  const i = els.indexOf(focused);
+  const it = focused && state.items.find((x) => x.id === focused.dataset.id);
+  const pending = els.filter((e) => isPending(state.items.find((x) => x.id === e.dataset.id))).length;
+  bar.querySelector(".mb-id").textContent = it ? it.id : "";
+  bar.querySelector(".mb-pos").textContent = `${i === -1 ? "–" : i + 1} of ${els.length}${pending ? ` · ${pending} to decide` : " · all decided"}`;
+  $("#mbar-prev").disabled = i <= 0;
+  $("#mbar-next").disabled = i === -1 || i >= els.length - 1;
+  bar.classList.toggle("decided", Boolean(it && VL.isDecided(it.meta)));
+  App.dock(bar);
 }
 
 // The shared keyboard model, spec flavour: j/k move, number keys are the verdict
@@ -882,12 +1074,14 @@ function buildSpecHelp() {
 buildSpecHelp();
 App.keyHandlers.spec = (e) => {
   if (e.key === "Escape") {
-    const open = document.querySelector("#items .item .unify-row:not([hidden])");
-    if (open) { open.closest(".item").__closeUnify?.(); return true; }
+    const open = document.querySelector(".decide .unify-row:not([hidden])");
+    if (open) { open.closest(".decide").__card?.__closeUnify?.(); return true; }
+    const menu = document.querySelector("#items details.more[open]");
+    if (menu) { menu.open = false; return true; }
     closeCode();
     return true;
   }
-  const focused = document.querySelector("#items .item.focused");
+  let focused = document.querySelector("#items .item.focused");
   if (e.key === "j") { moveFocus(1); return true; }
   if (e.key === "k") { moveFocus(-1); return true; }
   if (e.key === "e") {
@@ -900,13 +1094,23 @@ App.keyHandlers.spec = (e) => {
   if (e.key === "i" && setInstructions(!state.instrOpen)) return true;
   const verdict = decisions().find((d) => d.key && d.key === e.key.toLowerCase());
   if (verdict && focused) {
-    const btn = focused.querySelector(`[data-d="${CSS.escape(verdict.id)}"]`);
+    // A folded decided item unfolds first, so a re-decision is visible.
+    if (focused.classList.contains("collapsed")) {
+      state.expanded.add(focused.dataset.id);
+      patchItem(focused.dataset.id);
+      focused = itemEl(focused.dataset.id);
+    }
+    const btn = partOf(focused, `[data-d="${CSS.escape(verdict.id)}"]`);
     if (btn) btn.click(); else toast(`${verdict.label} does not apply to this item`);
     return true;
   }
-  if (e.key === "u" && focused) {
-    const und = focused.querySelector("[data-undecide]");
-    if (und) und.click(); else toast("Nothing to undo on this item");
+  if (e.key === "u") {
+    const und = partOf(focused, "[data-undecide]");
+    if (und) { und.click(); return true; }
+    // The focus moved on since the last verdict: undo that one.
+    const last = [...state.undoStack].reverse().find((id) => state.items.find((it) => it.id === id)?.meta.decision);
+    if (last) { state.undoStack = state.undoStack.filter((x) => x !== last); act(last, { action: "undecide", by: who() }); toast(`Undone: ${last}`); }
+    else toast("Nothing to undo");
     return true;
   }
   return false;
@@ -914,6 +1118,30 @@ App.keyHandlers.spec = (e) => {
 
 /* ---------- mount ---------- */
 $("#code-close").addEventListener("click", closeCode);
+$("#mbar-prev").addEventListener("click", () => moveFocus(-1));
+$("#mbar-next").addEventListener("click", () => moveFocus(1));
+$("#mbar-label").addEventListener("click", () => { const el = state.focusId && itemEl(state.focusId); if (el) scrollToItem(el); });
+let followRaf = 0;
+$("#main").addEventListener("scroll", () => {
+  if (followRaf || !isPhone() || App.mode !== "spec") return;
+  followRaf = requestAnimationFrame(() => { followRaf = 0; followScroll(); });
+}, { passive: true });
+// A sideways swipe on the cards is next / previous on a phone.
+onSwipe($("#items"), (d) => { if (isPhone() && App.mode === "spec") moveFocus(d); });
+// Close an open ⋯ menu on any tap outside it.
+document.addEventListener("click", (e) => {
+  for (const m of document.querySelectorAll("#items details.more[open]")) if (!m.contains(e.target)) m.open = false;
+});
+// Rotating or resizing across the phone breakpoint docks or undocks the bar.
+onPhoneChange(() => {
+  if (App.mode !== "spec") return;
+  if (isPhone() && !state.focusId) { const first = itemEls()[0]; if (first) state.focusId = first.dataset.id; }
+  for (const ta of document.querySelectorAll(".decide textarea")) {
+    const card = ta.closest(".decide")?.__card;
+    if (card) ta.placeholder = placeholderFor(!DECIDABLE(state.items.find((it) => it.id === card.dataset.id) || {}));
+  }
+  applyFocus();
+});
 window.addEventListener("beforeunload", (e) => {
   if (Object.keys(state.drafts).some((k) => state.drafts[k].trim())) { e.preventDefault(); e.returnValue = ""; }
 });
@@ -937,7 +1165,7 @@ const Spec = {
     if (target !== state.slug || changedSet) await selectSpec(target);
     else loadSpecs();
   },
-  close() { closeCode(); },
+  close() { closeCode(); syncDock(); },
   // Search jump: the target may be hidden by the current filters — widen to All so
   // the jump always lands, then flash the card so the eye finds it.
   async jumpTo(setId, slug, id) {
@@ -945,10 +1173,11 @@ const Spec = {
     await Spec.open(setId, slug);
     state.status = "all"; state.kind = "all";
     renderFilters(); renderItems();
-    const el = document.querySelector(`#items .item[data-id="${CSS.escape(id)}"]`);
+    if (state.items.find((it) => it.id === id)) { state.expanded.add(id); patchItem(id); }
+    const el = itemEl(id);
     if (el) {
-      el.scrollIntoView({ block: "start" });
       setFocus(id);
+      scrollToItem(el);
       el.classList.add("flash");
       setTimeout(() => el.classList.remove("flash"), 1800);
     }

@@ -1,0 +1,21 @@
+# Fictional demo of the `pair` content type — every name, place and line here is
+# invented. Each card shows two overlapping recordings on one timeline: judge
+# whether they captured the same event.
+id: pair-demo
+title: Same event? — fictional overlapping recordings
+question: Did these two recordings capture the same event?
+instructions: |
+  Each card shows two recordings that overlapped in time. **Combined** merges them
+  inside the overlap: a line both recordings heard appears once, marked **A+B**, with
+  the words only one of them heard marked; lines only one side has carry its own
+  letter. **Side by side** and **Full** are there when the overlap is not enough.
+labels:
+  - {id: same, label: Same event, key: "1", tone: positive}
+  - {id: different, label: Different, key: "2", tone: negative}
+  - {id: unsure, label: Unsure, key: "3"}
+blind: true
+round_size: 4
+meta_display: [started_at, pair_type]
+models:
+  - id: matcher
+    verdict_path: hidden.matcher.verdict
