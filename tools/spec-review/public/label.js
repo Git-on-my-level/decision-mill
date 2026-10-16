@@ -464,6 +464,14 @@ function factsEl(facts, mark) {
   }));
 }
 
+// An evidence record that cites an external artifact links its title there.
+function evidenceTitle(e) {
+  const title = e.title || "(untitled)";
+  const href = httpHref(e.url);
+  return href ? extLink(href, { class: "pp-ev-title pp-ev-link", tabindex: "-1", title: `Open in a new tab: ${href}` }, title, el("span", { class: "ext", "aria-hidden": "true" }, " ↗"))
+    : el("span", { class: "pp-ev-title" }, title);
+}
+
 function evidenceEl(e, mark) {
   const segs = Array.isArray(e.segments) ? e.segments : [];
   const cited = Array.isArray(e.cited) ? new Set(e.cited) : null;
@@ -471,7 +479,7 @@ function evidenceEl(e, mark) {
   const rest = cited ? segs.filter((s) => !cited.has(s?.id)) : [];
   return el("div", { class: "pp-ev" },
     el("div", { class: "pp-ev-head" },
-      el("span", { class: "pp-ev-title" }, e.title || "(untitled)"),
+      evidenceTitle(e),
       e.tag ? el("span", { class: "pp-tag" }, e.tag) : null),
     factsEl(e.facts, mark),
     e.text ? el("p", { class: "pp-ev-text" }, mark ? mark(e.text) : e.text) : null,
@@ -606,8 +614,13 @@ function cardEl(entry) {
     el("p", {}, item.summary)) : null;
   const segs = item.content?.type === "transcript" ? (item.content.segments || []).length : 0;
   const chips = metaChips(item);
+  // The source link sits in the title row, the far end of the card from the sticky
+  // verdict bar: findable when the packaged evidence is not enough, never in the
+  // path of a one-click verdict, and it moves no content.
+  const href = httpHref(item.url);
+  const source = href ? extLink(href, { class: "lc-source", tabindex: "-1", title: `Open the source in a new tab: ${href}` }, "Source", el("span", { "aria-hidden": "true" }, " ↗")) : null;
   return el("article", { class: "lcard", "data-id": item.id },
-    item.title ? el("h3", { class: "lc-title" }, item.title) : null,
+    item.title || source ? el("div", { class: "lc-head" }, item.title ? el("h3", { class: "lc-title" }, item.title) : null, source) : null,
     chips.length || item.truncated ? el("div", { class: "lc-meta" },
       chips.map((c) => el("span", { class: "chip" }, c)),
       item.truncated ? el("span", { class: "chip warn" }, "excerpt — the full item was cut") : null) : null,

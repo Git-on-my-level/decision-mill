@@ -3,6 +3,8 @@
 // renders it (public/label.js + public/proposal-diff.js); this file validates it
 // and flattens it to text for search and stand-in briefs.
 
+import { httpUrl, shown } from "./url.js";
+
 const isObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
 const isStrList = (v) => Array.isArray(v) && v.every((x) => typeof x === "string");
 const str = (v) => (v == null || v === "" ? "" : typeof v === "string" ? v : JSON.stringify(v));
@@ -27,6 +29,7 @@ export function proposalProblems(c) {
       if (typeof e.title !== "string" || !e.title) w.push(`proposal evidence[${i}] needs a title`);
       if (e.segments != null && !Array.isArray(e.segments)) w.push(`proposal evidence[${i}].segments must be a list`);
       if (e.cited != null && !isStrList(e.cited)) w.push(`proposal evidence[${i}].cited must be a list of segment ids`);
+      if (e.url != null && !httpUrl(e.url)) w.push(`proposal evidence[${i}].url must be an http(s) URL (got '${shown(e.url)}'); the title stays plain text`);
       if (e.text != null && typeof e.text !== "string") w.push(`proposal evidence[${i}].text must be a string`);
       if (e.facts != null && !isObj(e.facts) && !(Array.isArray(e.facts) && e.facts.every((f) => isObj(f) && typeof f.name === "string"))) {
         w.push(`proposal evidence[${i}].facts must be a mapping or a list of {name, value}`);
@@ -42,7 +45,8 @@ export function proposalProblems(c) {
   return w;
 }
 
-// Plain text of a proposal, for search and the stand-in brief.
+// Plain text of a proposal, for search and the stand-in brief. Evidence `url`s are
+// left out on purpose: a bare URL adds nothing to matching or to a stand-in.
 export function proposalText(c) {
   const ch = isObj(c.change) ? c.change : {};
   const lines = [];

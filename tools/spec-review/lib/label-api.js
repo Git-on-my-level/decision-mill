@@ -96,6 +96,7 @@ export function taskSummaries(roots, reviewer) {
   });
 }
 
+// Search text: what a reviewer reads. Item and evidence `url`s are not in it.
 const segText = (segs) => (Array.isArray(segs) ? segs.map((s) => s && s.text).filter(Boolean).join(" ") : "");
 function visibleText(it) {
   const c = it.content || {};
@@ -124,6 +125,8 @@ export function searchTasks(roots, terms, limit) {
 // What a reviewer may see of an item. While the task is blind and this reviewer
 // has not labeled it, hidden model answers and the stratum (which usually encodes
 // them, e.g. "nano_discard_jev_keep") are withheld by the server, not just the UI.
+// Everything else passes through, including `url`: a source link is visible meta,
+// not a model answer.
 function viewItem(t, it, labeledByMe) {
   const blindNow = t.task.kind === "speakers" || (t.task.blind && !labeledByMe);
   const { hidden, stratum, ...rest } = it;

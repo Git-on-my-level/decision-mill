@@ -78,7 +78,7 @@ One JSON object per line:
 
 ```json
 {"id": "conv-uuid", "stratum": "nano_discard_jev_keep",
- "title": "…",
+ "title": "…", "url": "https://example.com/where/it/came/from",
  "meta": {"started_at": "2026-09-20T14:03:00Z", "duration_s": 74, "source": "omi", "word_count": 41},
  "content": {"type": "transcript", "segments": [
    {"speaker": "SPEAKER_1", "is_user": true, "start": 0.0, "text": "…"}]},
@@ -94,6 +94,7 @@ One JSON object per line:
 | `content` | yes | `{"type": "transcript", "segments": [...]}`, `{"type": "markdown", "body": "…"}`, `{"type": "text", "body": "…"}`, or `{"type": "proposal", …}` (a proposed edit to judge; see [Proposal items](#proposal-items)). |
 | `segments[]` | — | `speaker`, `is_user` (styled as the reviewer), `start` seconds (shown as a timestamp; clickable when audio exists), `text`, optional `name` (display name). |
 | `title` | no | Shown above the content. |
+| `url` | no | Permalink to where the item came from (the pull request, doc, thread or dashboard). Shown as a quiet "Source ↗" link at the right of the title row, opening in a new tab. Only `http:`/`https:` URLs become links; anything else is not shown, and the validator warns. Visible even when blind, and left out of search text and stand-in briefs. |
 | `meta` | no | Shown as chips on the card (only the keys in `meta_display`). **Always visible, even when blind — never put model output here.** |
 | `summary` | no | Collapsed by default, labeled as model-written (a summary can make a fragment look meaningful). |
 | `context[]` | no | Neighboring items so the reviewer is not judging a snippet. `relation` is `before` / `after` / `overlapping`, `gap_min` minutes, `title`, `summary`, and optionally `segments` or `content` (expandable). |
@@ -149,11 +150,18 @@ The question goes in the verdict bar, once.
 | `change.compare` | `true` when `fields` compares two records side by side (two conversations, two memories) rather than old → new: differences are marked on both sides instead of struck. |
 | `change.notes` | Short factual lines under the change, e.g. a computed overlap. |
 | `change.target`, `change.raw` | The edited record's id, and the raw proposal (folded). |
-| `evidence[]` | `title` (required, human: "Conversation · 10:00–10:10 · 'title'"), `tag` (a chip such as Target / Other / Cited), `ref`, `segments` (transcript segments, rendered like a transcript), `cited` (segment ids shown first; the rest fold away), `text`, `facts` (`{name: value}` or `[{name, value}]`; null shows "— missing"), `raw` (folded). |
+| `evidence[]` | `title` (required, human: "Conversation · 10:00–10:10 · 'title'"), `tag` (a chip such as Target / Other / Cited), `ref`, `segments` (transcript segments, rendered like a transcript), `cited` (segment ids shown first; the rest fold away), `text`, `facts` (`{name: value}` or `[{name, value}]`; null shows "— missing"), `raw` (folded), `url` (an `http(s)` link to the cited artifact: the title becomes a link that opens in a new tab; any other value leaves the title plain and the validator warns). |
 | `highlight` | Terms to mark in the evidence, as strings or `{text, side: before\|after}`. Default: the change's `before` and `after` strings. |
 | `policy` | Rules text (split into sentences) or a list of rules. |
 | `policy_focus` | Snippets; rules containing one are highlighted and shown while the policy is folded. Pick them per kind of edit, not per answer, so they never hint at the verdict. |
 | `question` | Replaces the task's question in the verdict bar for this item. |
+
+Give an item a `url` when it was built from an external system and a reviewer may
+want the real thing (the live CI runs, the full diff, the upstream conversation)
+before committing to a verdict; give an evidence record a `url` when it cites one
+specific external artifact (a check run, a review thread). The card stays judgeable
+without leaving the page: the links are an escape hatch, so whatever a verdict
+needs still belongs on the card itself.
 
 `examples/labels/proposal-demo/` is a fictional task with every shape (spelling,
 title, CJK, a long rewrite, multi-field, a two-record comparison).
@@ -343,7 +351,7 @@ Writes must be `content-type: application/json`.
 
 `node tools/spec-review/validate.js` checks every task under the configured roots
 alongside the specs: task.yaml structure, duplicate or reserved keys, items that do
-not parse, duplicate ids, unknown content types, malformed proposal content, model verdicts that are not label
+not parse, duplicate ids, unknown content types, malformed proposal content, item or evidence `url`s that are not `http(s)`, model verdicts that are not label
 ids, media paths outside `media/`, unparseable label rows, and wave files that do not
 parse, skip a number, or put an item in two waves.
 
