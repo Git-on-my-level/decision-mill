@@ -163,7 +163,7 @@ export function splitLocator(locator, roots) {
   const want = schemes.map((k) => `${k}:`).join(" or ");
   if (colon <= 0) return { error: `locator must start with ${want}` };
   const scheme = s.slice(0, colon);
-  if (!(scheme in roots)) return { error: `unknown locator scheme '${scheme}:' (declared: ${want})` };
+  if (!Object.hasOwn(roots, scheme)) return { error: `unknown locator scheme '${scheme}:' (declared: ${want})` };
   const rel = s.slice(colon + 1).replace(/\/+$/, "");
   if (!rel) return { error: "empty locator path" };
   if (rel.startsWith("/") || rel.startsWith("~") || rel.split("/").includes("..") || rel.split("/")[0] === ".") return { error: "invalid locator path (use a path relative to the root)" };
