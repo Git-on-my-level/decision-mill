@@ -51,9 +51,13 @@ function gotoItem(id) {
 }
 // Leave a deep link (#/task/x/item/y) once the reviewer moves on, so a reload
 // resumes at the first unlabeled card instead of the old one.
+// Vendored patch (Omi, 2026-10-17): on the label tab the hash now names the
+// CURRENT item, so the URL is copyable mid-session and a paste-back resumes
+// exactly where the reviewer was.
 function settleHash() {
   const base = `#/task/${enc(L.taskId)}`;
-  const want = L.tab === "label" ? base : `${base}/${L.tab}`;
+  const id = L.tab === "label" ? currentId() : null;
+  const want = id ? `${base}/item/${enc(id)}` : (L.tab === "label" ? base : `${base}/${L.tab}`);
   if (location.hash !== want) history.replaceState(null, "", want);
 }
 
