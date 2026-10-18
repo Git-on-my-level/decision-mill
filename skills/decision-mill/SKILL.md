@@ -103,6 +103,29 @@ with the text as its detail; the verdict keys take the text along as the reason,
 Shift+⌘/Ctrl+Enter saves a plain note. Tell the reviewer this. Validate with `node tools/spec-review/validate.js
 --locators` (it also checks the yaml and warns on a `<CAP>` code reused across files).
 
+**Give cards their real answers.** When a card's outcome is one of a few known answers
+(flags: graduate / extend / keep as ops kill / kill), do not make the reviewer type
+"Graduate now" into Change. Write them on the card and name the recommendation
+(fictional template: `examples/flag-review/`; spec: FORMAT.md "Card options"):
+
+```yaml
+# decision-mill.yaml — a shared library, shown only on cards that list it
+options:
+  - {id: graduate, label: Graduate now, hint: "delete the flag, the feature stays on"}
+  - {id: extend, label: Extend, requires_detail: true}
+  - {id: ops_kill, label: Keep as ops kill}
+  - {id: kill, label: Kill, tone: negative}
+# in the card's adjudication block
+proposed: extend
+options: [graduate, {id: extend, label: "Extend to 11-06", requires_detail: false}, ops_kill, kill]
+```
+
+Keys: `1–9` are the focused card's options in order (shown on each button), Enter or
+`a` takes the recommended one, the set's other verdicts move to letters (Defer `d`),
+⌘/Ctrl+Enter still records a typed answer, and text in the box rides along as the
+reason. Stored: `decision: <option id>`; the server refuses ids the card does not
+offer. **Batch view** (toolbar) shows every card as title + buttons for quick passes.
+
 ## Waiting for the human (never poll)
 
 Hand the human the URL, then block on a background waiter that exits on every

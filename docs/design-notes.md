@@ -163,6 +163,15 @@ The orchestrating agent polled the server to learn when the human had finished.
 → Long-poll endpoints plus `wait.js` and `labels.js wait`, which exit 0 / 2 / 1 so
 they run as background waiters that end on every terminal state.
 
+Each card's real answer was usually one of the flag outcomes, but the buttons were the
+set-wide Accept / Change / Defer, so "graduate now" was typed into Change and sent with
+⌘Enter, card after card (2026-10-18 feedback: slow and error-prone; "labels should be
+flexible and have hotkeys").
+→ Per-card `options:` with a set-level library, keys `1–9` in card order and printed on
+every button, the `proposed` option marked recommended and taken by Enter, set verdicts
+moved to letters, stored as `decision: <option id>` and enforced by the server; plus a
+Batch view for ruling on a run of similar cards.
+
 Smaller findings from the same sessions: evidence spanned two repositories (one
 locator prefix was not enough → `LOCATOR_ROOTS`); a task kept its `pending:` flag
 after items landed; and three spec files all used the same `<CAP>` code, making ids

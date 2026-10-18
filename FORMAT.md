@@ -73,8 +73,10 @@ explanation: >              # optional for most kinds; REQUIRED for kind: featur
 proposed: unify-on-optimistic  # keep | change | unify-on-<x> | file | n/a — the extractor's proposal
 confidence: high            # high | med | low
 status: open                # open | decided | needs-metrics | team (parked for a live walkthrough)
+options: []                 # optional — this card's own answers (see Card options)
 decision: null              # null until adjudicated; then keep | change | defer | unify-on-<x>
-                            # (or an id the set declares in decision-mill.yaml)
+                            # (or an id the set declares in decision-mill.yaml, or one of
+                            # this card's options)
 decision_detail: null       # free text qualifying the decision (see change prefixes below)
 decided_at: null            # ISO date when decided
 evidence:                   # locators; lines optional — "120", "120-180", "364,388-468"
@@ -139,6 +141,8 @@ decisions:               # replaces the default Keep / Change / Defer / Unify bu
   - {id: extend,   label: Extend,   hint: "keep the flag; say until when", requires_detail: true}
   - {id: change,   label: Change,   hint: "keep the flag, change its rollout"}
   - {id: defer}
+options:                 # a library of named answers that cards pull in by id
+  - {id: ops_kill, label: Keep as ops kill, hint: "a permanent stop lever"}
 locator_roots:           # extra schemes for this set; paths relative to this file
   kb: ../knowledge-base
 ```
@@ -153,6 +157,7 @@ locator_roots:           # extra schemes for this set; paths relative to this fi
 | `custom` | The verdict a **typed answer** records: the reviewer types in the item's text box and presses ⌘/Ctrl+Enter (or **Answer**), and that text becomes the verdict's detail. At most one. Without it a typed answer records `change`, else the first `requires_detail` verdict; a set with neither treats typed text as a note only. |
 | `kinds` | Only offer this verdict on items of these kinds. |
 | `{id: unify}` | The Unify-on… flow (stores `unify-on-<target>`), divergences only. Leave it out and no unify button appears. |
+| `options[]` | A library of answers (`{id, label?, hint?, key?, tone?, requires_detail?}`, same rules as `decisions[]`) that appear only on cards that list them — see [Card options](#card-options). |
 
 Rules that still hold with a declared vocabulary:
 
@@ -165,6 +170,58 @@ Rules that still hold with a declared vocabulary:
   (not the legacy `keep` reading), and the legacy-spelling warning is not raised.
 - The built-in values (`keep`, `change`, `defer`, `file`, `unify-on-<x>`) and legacy
   spellings stay valid in every set, so existing files never become invalid.
+
+## Card options
+
+When a card's real answers are not the set's verdicts — a flag card whose outcomes are
+graduate / extend / keep as ops kill / kill — give the card its own `options:`, and
+its buttons become those answers. One key decides it; nobody types "Graduate now" into
+a Change box.
+
+```yaml
+proposed: extend               # names one of the options: it is marked "recommended"
+options:
+  - graduate                   # a bare id: the set's options library (or its decisions)
+  - {id: extend, label: "Extend to 11-06"}   # a mapping: overrides the library entry…
+  - ops_kill
+  - {id: raise_cap, label: "Raise the cap to 1000", hint: "keep the drop, move the limit"}  # …or is new
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `id` | The value stored in `decision`. Lowercase letters, digits, `-`, `_`; unique on the card. |
+| `label`, `hint` | Button text (default: the library's, else the id capitalized) and the small line under it. |
+| `key` | Optional single-character shortcut. Missing keys get the next free digit `1…9` **in card order**. `j k u e i ? /` are refused. |
+| `tone` | `positive` / `negative` / `neutral` (default: the library's, else neutral). |
+| `requires_detail` | As for `decisions[]`: the reason must be in the box first. A card may override the library's value. |
+
+What the card shows, and what it accepts:
+
+- **The card's options first**, keys `1…9` in order, the `proposed` one marked
+  *recommended*. **Enter** (or `a`) on the focused card takes the recommended answer.
+- **Then the set's verdicts the card still needs**, keyed by letters so a digit always
+  means "option N" (a declared letter key, else the first free letter of the label:
+  Defer → `d`). Two are folded away because the card's options cover them: the
+  **accept verdict** (`accept` or `keep`) becomes "take the recommended option", and the
+  **typed-answer verdict** (the set's `custom`, else `change`) stays reachable through
+  the text box and ⌘/Ctrl+Enter. Both remain valid stored values.
+- **Writes** must be one of the card's effective options (its own, or a set verdict
+  it keeps; `unify-on-<x>` on divergences that keep unify). Anything else is a 400.
+  Writing the accept verdict to a card with a recommendation stores the recommended
+  option's id, so older clients and agents keep working.
+- **Stored state** is plain: `decision: <option id>`, `decision_detail:` the reviewer's
+  typed reason (or null), and the audit note `decision: <id> — <reason>`. The label is
+  not copied anywhere: it lives in the card's `options:` block next to the decision,
+  and the UI shows it (a decided card folds to "GRADUATE NOW", not "CHANGE").
+- **No `options:`** = exactly the set's verdicts, as before. Decisions stored before a
+  card gained options (`decision: change`, `decision_detail: "change: Graduate now"`)
+  still load, display and validate, because `change` is still one of the card's
+  effective options.
+
+`validate.js` errors on a malformed options block (no id, a bad id, a duplicate id or
+key, a reserved key, a bare id that is in neither the library nor the decisions), and
+warns on a `proposed` that is none of the card's options, a stored decision that is
+not one of them, and a `requires_detail` option stored without its detail.
 
 ## Rules
 

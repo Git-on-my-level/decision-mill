@@ -42,8 +42,8 @@ for (const dir of SPECS_DIRS) {
   if (!fs.existsSync(dir)) { console.log(`FAIL specs dir not found: ${dir}`); failed = true; continue; }
   const cfg = loadSpecSetConfig(dir);
   const roots = rootsForSet(cfg);
-  const opts = { schemes: Object.keys(roots), decisions: cfg.customDecisions ? cfg.decisions : null };
-  if (SPECS_DIRS.length > 1 || cfg.present) console.log(`specs ${dir}${cfg.present ? `  (${path.basename(cfg.file)}: ${cfg.customDecisions ? `decisions ${cfg.decisions.map((d) => d.id).join("/")}` : "default decisions"}${cfg.instructions ? ", instructions" : ""})` : ""}`);
+  const opts = { schemes: Object.keys(roots), decisions: cfg.customDecisions ? cfg.decisions : null, setDecisions: cfg.decisions, options: cfg.options };
+  if (SPECS_DIRS.length > 1 || cfg.present) console.log(`specs ${dir}${cfg.present ? `  (${path.basename(cfg.file)}: ${cfg.customDecisions ? `decisions ${cfg.decisions.map((d) => d.id).join("/")}` : "default decisions"}${cfg.options.length ? `, options ${cfg.options.map((o) => o.id).join("/")}` : ""}${cfg.instructions ? ", instructions" : ""})` : ""}`);
   if (cfg.errors.length) { failed = true; console.log(`FAIL ${path.basename(cfg.file)}`); for (const e of cfg.errors) console.log(`  - ${e}`); }
   for (const w of cfg.warnings) { warnCount++; console.log(`  warn ${w}`); }
   if (CHECK_LOCATORS) {

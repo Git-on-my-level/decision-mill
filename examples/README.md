@@ -10,6 +10,11 @@ a working UI in both modes on a fresh clone, with citations that open real files
   `DEC` items with its own `decision-mill.yaml` (Graduate / Extend / Kill / Change /
   Defer buttons, reviewer instructions, and a `code:` locator scheme rooted at
   `code/`).
+- `flag-review/` — a third spec set showing **per-card options** (FORMAT.md, "Card
+  options"): the set keeps Accept / Change / Defer and adds an `options:` library
+  (graduate / extend / ops_kill / kill) that flag cards pull in by id, override, or
+  extend with card-only answers. It also holds one card decided the old way
+  (`change` + "Graduate now"), which still loads and validates.
 - `code/` — the small invented source tree those citations point at. Three files in
   three languages, so the code panel's syntax labelling has something to do.
 - `labels/demo-task/` — a label task (see `LABELS.md`): 12 invented items covering

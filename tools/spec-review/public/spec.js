@@ -23,6 +23,9 @@ const state = {
   cfg: null,
   cfgs: Object.create(null), // setId -> cfg, for labels in search results
   instrOpen: false,
+  // Batch view: every card shrinks to title, explanation and its answer buttons,
+  // so a group of similar cards can be ruled on in one pass. Remembered per set.
+  batch: false,
   title: "",
   // Decided items fold to one line; these are the ones the reviewer unfolded.
   expanded: new Set(),
@@ -35,6 +38,7 @@ const state = {
 };
 
 const VL = globalThis.ViewLogic;
+const OL = globalThis.OptionsLogic;
 // Open/closed of the Sources and earlier-notes disclosures, remembered per browser.
 const disc = VL.disclosureStore((() => { try { return window.localStorage; } catch { return null; } })());
 
@@ -48,12 +52,18 @@ const DEFAULT_DECISIONS = [
   { id: "unify", label: "Unify on…", key: null, tone: "unify", hint: "the rewrite adopts one target's behavior on every surface", kinds: ["divergence"] },
 ];
 const decisions = () => (state.cfg && state.cfg.decisions) || DEFAULT_DECISIONS;
+// An item's buttons: its own `options:` (FORMAT.md "Card options") followed by the
+// set verdicts it keeps, or just the set verdicts. One reading with the server's.
+const effOf = (it, cfg = state.cfg) => OL.effectiveOptions(it || {}, { decisions: (cfg && cfg.decisions) || DEFAULT_DECISIONS, options: (cfg && cfg.options) || [] });
+const shownOf = (eff) => eff.options.filter((o) => !o.hidden);
 // The text box is an answer box: typed text + ⌘/Ctrl+Enter is a verdict, the
 // verdict keys take the text along as the reason, and a note is the explicit extra.
-function answerPlaceholder(isGeneral) {
+function answerPlaceholder(isGeneral, it) {
   const a = answerDef();
   if (isGeneral || !a) return "note — ⌘/Ctrl+Enter saves it";
-  const keyed = decisions().filter((d) => d.key && d.id !== "unify").map((d) => `${d.key} ${d.label}`).join(" · ");
+  const eff = effOf(it);
+  if (eff.own) return `Your own answer — ⌘/Ctrl+Enter records it. Or pick an option${eff.recommended ? " (Enter = recommended)" : ""}; this text rides along as the reason.`;
+  const keyed = shownOf(eff).filter((d) => d.key && d.id !== "unify").map((d) => `${d.key} ${d.label}`).join(" · ");
   return `Your answer — type it and press ⌘/Ctrl+Enter (records ${a.label} with this text). Or pick ${keyed}; the text rides along as the reason.`;
 }
 // The verdict a typed answer records (mirrors lib/specset.js answerDecision).
@@ -63,13 +73,6 @@ function answerDef() {
 }
 const TONE_BTN = { positive: "b-keep", negative: "b-toss", neutral: "ghost", unify: "b-unify" };
 const TONE_CLS = { positive: "keep", negative: "toss", neutral: "defer", unify: "unify" };
-// Does decision `d` apply to item `it`? Unify only ever applies to divergences.
-function appliesTo(d, it) {
-  const isDiv = it.kind === "divergence" || /^DIV-/.test(it.id);
-  if (d.id === "unify" && !isDiv) return false;
-  if (!d.kinds) return true;
-  return d.kinds.includes(it.kind) || (isDiv && d.kinds.includes("divergence"));
-}
 const DECIDABLE = (it) => it.kind !== "general";
 
 // Single-reviewer tool: the identity picker was noise. Notes written by agents
@@ -156,7 +159,11 @@ function renderInstructions() {
   state.instrOpen = seen === null ? true : Boolean(seen);
   if (seen === null) store.set(`specinstr:${state.set}`, false);
   const legend = decisions().map((x) => `<tr><td>${x.key ? `<kbd>${esc(x.key)}</kbd>` : ""}</td><td><span class="vtag v-${TONE_CLS[x.tone] || "defer"}">${esc(x.label)}</span></td>
-    <td>${esc(x.hint || "")}${x.requires_detail ? ` <em class="req">— needs a detail in the box first</em>` : ""}${x.kinds ? ` <span class="muted">(${esc(x.kinds.join(", "))} only)</span>` : ""}</td></tr>`).join("");
+    <td>${esc(x.hint || "")}${x.requires_detail ? ` <em class="req">— needs a detail in the box first</em>` : ""}${x.kinds ? ` <span class="muted">(${esc(x.kinds.join(", "))} only)</span>` : ""}</td></tr>`).join("")
+    + ((cfg.options || []).length ? `<tr><td colspan="3" class="legend-sub">Card options — on the cards that list them; keys 1–9 in card order, set verdicts move to letters (Defer <kbd>d</kbd>)</td></tr>`
+      + cfg.options.map((x) => `<tr><td>${x.key ? `<kbd>${esc(x.key)}</kbd>` : ""}</td><td><span class="vtag v-${TONE_CLS[x.tone] || "defer"}">${esc(x.label)}</span></td>
+    <td>${esc(x.hint || "")}${x.requires_detail ? ` <em class="req">— needs a detail in the box first</em>` : ""}</td></tr>`).join("") : "")
+    + `<tr><td><kbd>↵</kbd></td><td colspan="2">Enter or <kbd>a</kbd> takes the card's recommended answer</td></tr>`;
   d.hidden = false;
   d.open = state.instrOpen;
   // Opened automatically on a first visit: clamped to a few lines on a phone so
@@ -203,6 +210,7 @@ async function selectSpec(slug) {
   state.slug = slug;
   state.focusId = null;
   state.expanded.clear();
+  state.batch = Boolean(store.get(`specbatch:${state.set}`, false));
   const data = await api(`api/spec/${encodeURIComponent(slug)}?${setQ()}`);
   if (tok !== selectToken) return; // a later click won; don't paint stale data
   state.items = data.items;
@@ -283,6 +291,13 @@ function renderFilters() {
     b.onclick = () => { state.status = key; renderFilters(); renderItems(); };
     el.appendChild(b);
   }
+  const bt = document.createElement("button");
+  bt.className = "batch-toggle" + (state.batch ? " on" : "");
+  bt.type = "button";
+  bt.textContent = state.batch ? "✓ Batch view" : "Batch view";
+  bt.title = "show every card as title + answer buttons, to rule on a batch quickly";
+  bt.setAttribute("aria-pressed", String(state.batch));
+  bt.onclick = () => { state.batch = !state.batch; store.set(`specbatch:${state.set}`, state.batch); renderFilters(); renderItems(); };
   const ssel = document.createElement("select");
   ssel.className = "status-select";
   ssel.setAttribute("aria-label", "Filter by status");
@@ -295,6 +310,7 @@ function renderFilters() {
   ssel.value = state.status;
   ssel.onchange = () => { state.status = ssel.value; renderFilters(); renderItems(); };
   el.appendChild(ssel);
+  el.appendChild(bt);
   // Only offer kinds this spec has (plus the current one), so a decision register
   // is not a list of empty filters.
   const present = new Set(state.items.filter((it) => it.kind !== "general").map((it) => it.kind));
@@ -349,6 +365,7 @@ const isPending = (it) => Boolean(it) && DECIDABLE(it) && (it.meta.status || "op
 function renderItems() {
   const wrap = $("#items");
   wrap.innerHTML = "";
+  wrap.classList.toggle("batch", state.batch);
   const items = visibleItems();
   if (!items.length) { wrap.innerHTML = `<div class="empty">Nothing under this filter.</div>`; syncDock(); return; }
   for (const it of items) wrap.appendChild(renderItem(it));
@@ -368,12 +385,16 @@ const VERDICT_CLASS = { accept: "keep", change: "toss" }; // change reuses toss'
 // A declared decision (decision-mill.yaml) wins over the legacy readings, so a set
 // that declares `accept` shows "ACCEPT", not "KEEP".
 const declaredDef = (d, cfg = state.cfg) => (cfg && cfg.customDecisions ? cfg.decisions.find((x) => x.id === d && x.id !== "unify") : null);
-function verdictLabel(d, cfg = state.cfg) {
+function verdictLabel(d, cfg = state.cfg, it = null) {
+  const own = it && it.meta && it.meta.options != null ? OL.optionFor(effOf(it, cfg), d) : null;
+  if (own && own.source === "card") return own.label.toUpperCase();
   const def = declaredDef(d, cfg);
   return def ? def.label.toUpperCase() : VERDICT_LABEL[d] || String(d).toUpperCase();
 }
 
-function verdictCls(decision) {
+function verdictCls(decision, it = null) {
+  const own = it && it.meta && it.meta.options != null ? OL.optionFor(effOf(it), String(decision)) : null;
+  if (own && own.source === "card") return TONE_CLS[own.tone] || "defer";
   const def = declaredDef(String(decision));
   if (def) return TONE_CLS[def.tone] || "defer";
   const base = String(decision).split("-")[0];
@@ -384,11 +405,12 @@ function verdictCls(decision) {
 // Compact badge: verdict + date only. The rationale is NOT shown here — all
 // reviewer-written text renders in one place, the notes timeline above the
 // textarea, so it never appears in two different positions depending on state.
-function stampHtml(meta) {
+function stampHtml(it) {
+  const meta = it.meta;
   if (!meta.decision) return "";
   const decision = String(meta.decision);
-  const label = verdictLabel(decision);
-  return `<span class="stamp v-${verdictCls(decision)}" title="${esc(meta.decided_at ? `decided ${meta.decided_at}` : "decided")}">${esc(label)}${meta.decided_at ? ` <small>${esc(String(meta.decided_at).slice(5, 10))}</small>` : ""}</span>`;
+  const label = verdictLabel(decision, state.cfg, it);
+  return `<span class="stamp v-${verdictCls(decision, it)}" title="${esc(meta.decided_at ? `decided ${meta.decided_at}` : "decided")}">${esc(label)}${meta.decided_at ? ` <small>${esc(String(meta.decided_at).slice(5, 10))}</small>` : ""}</span>`;
 }
 
 // unify-on-<slug>: keep the machine value in the documented vocabulary and put the
@@ -513,13 +535,13 @@ function metricsHtml(metrics) {
 
 // One row of the notes timeline. Audit notes ("decision: toss — why") render with
 // a colored verdict tag instead of the raw prefix; status flips render muted.
-function noteRowHtml(n) {
+function noteRowHtml(n, it) {
   const c = VL.classifyNote(n.text);
   let cls = "note-row", body;
-  if (c.type === "decision") body = `<span class="vtag v-${verdictCls(c.verdict)}">${esc(verdictLabel(c.verdict))}</span>${c.rest ? esc(c.rest) : ""}`;
+  if (c.type === "decision") body = `<span class="vtag v-${verdictCls(c.verdict, it)}">${esc(verdictLabel(c.verdict, state.cfg, it))}</span>${c.rest ? esc(c.rest) : ""}`;
   // Agent recommendations ("rec: toss — why") get the same translated verdict
   // chip as decisions, prefixed REC, so the label matches the buttons above.
-  else if (c.type === "rec") body = `<span class="vtag v-rec">REC · ${esc(verdictLabel(c.verdict))}</span>${c.rest ? esc(c.rest) : ""}`;
+  else if (c.type === "rec") body = `<span class="vtag v-rec">REC · ${esc(verdictLabel(c.verdict, state.cfg, it))}</span>${c.rest ? esc(c.rest) : ""}`;
   else if (c.type === "sys") { cls += " sys"; body = esc(c.rest); }
   else body = esc(c.rest);
   // Text gets the full row; timestamp (and author, only when it isn't the
@@ -529,10 +551,10 @@ function noteRowHtml(n) {
 }
 
 // A short placeholder on a phone, where the box is one line tall.
-function placeholderFor(isGeneral) {
-  if (!isPhone()) return answerPlaceholder(isGeneral);
+function placeholderFor(isGeneral, it) {
+  if (!isPhone()) return answerPlaceholder(isGeneral, it);
   const a = answerDef();
-  return isGeneral || !a ? "Note…" : `Your answer… (records ${a.label})`;
+  return isGeneral || !a ? "Note…" : effOf(it).own ? "Your own answer…" : `Your answer… (records ${a.label})`;
 }
 
 // The card shows what a decider needs — id, title, explanation, prose — and puts
@@ -556,18 +578,29 @@ function renderItem(it) {
 
   const { earlier, recent } = VL.splitNotes(meta.notes);
   const notesHtml = (earlier.length
-    ? `<details class="older-notes"${disc.get("notes") ? " open" : ""}><summary>${earlier.length} earlier note${earlier.length === 1 ? "" : "s"}</summary>${earlier.map(noteRowHtml).join("")}</details>` : "")
-    + recent.map(noteRowHtml).join("");
+    ? `<details class="older-notes"${disc.get("notes") ? " open" : ""}><summary>${earlier.length} earlier note${earlier.length === 1 ? "" : "s"}</summary>${earlier.map((n) => noteRowHtml(n, it)).join("")}</details>` : "")
+    + recent.map((n) => noteRowHtml(n, it)).join("");
   // The set's verdict buttons, in declared order. Only divergences can be unified —
   // there is nothing to converge on for an invariant, a failure case or an unknown.
-  const verdictButtons = decisions().filter((d) => appliesTo(d, it)).map((d) =>
-    `<button class="btn ${TONE_BTN[d.tone] || "ghost"}" data-d="${esc(d.id)}" type="button"${d.hint || d.key ? ` title="${esc([d.hint, d.key ? `key ${d.key}` : ""].filter(Boolean).join(" — "))}"` : ""}>${esc(d.label)}${d.key ? `<kbd>${esc(d.key)}</kbd>` : ""}</button>`);
+  // A card with its own options shows them as a row of large buttons (keys 1–9,
+  // the recommended one marked), then the set verdicts it keeps (letter keys).
+  const eff = effOf(it);
+  const shown = shownOf(eff);
+  const chosen = meta.decision != null ? String(meta.decision) : null;
+  const btnTitle = (d) => [d.hint, d.recommended ? "recommended — Enter" : "", d.key ? `key ${d.key}` : ""].filter(Boolean).join(" — ");
+  const recTag = (d) => (d.recommended ? `<small class="rec-tag">recommended</small>` : "");
+  const verdictButtons = shown.filter((d) => !(eff.own && d.source === "card")).map((d) =>
+    `<button class="btn ${TONE_BTN[d.tone] || "ghost"}${d.recommended ? " rec" : ""}${chosen === d.id ? " chosen" : ""}" data-d="${esc(d.id)}" type="button"${btnTitle(d) ? ` title="${esc(btnTitle(d))}"` : ""}>${esc(d.label)}${recTag(d)}${d.key ? `<kbd>${esc(d.key)}</kbd>` : ""}</button>`);
+  const optionButtons = eff.own ? shown.filter((d) => d.source === "card").map((d) =>
+    `<button class="btn opt t-${TONE_CLS[d.tone] || "defer"}${d.recommended ? " rec" : ""}${chosen === d.id ? " chosen" : ""}" data-d="${esc(d.id)}" type="button"${btnTitle(d) ? ` title="${esc(btnTitle(d))}"` : ""}>
+      ${d.key ? `<kbd>${esc(d.key)}</kbd>` : ""}<span class="opt-text">${recTag(d)}<span class="opt-label">${esc(d.label)}</span>${d.hint ? `<span class="opt-hint">${esc(d.hint)}</span>` : ""}</span>
+    </button>`) : [];
   const sum = VL.decidedSummary(meta);
   const facts = VL.itemFacts(it, KIND_LABEL);
   const conf = meta.confidence ? `<span class="conf conf-${esc(slugify(meta.confidence))}" title="the extractor's confidence in its recommendation">${esc(meta.confidence)} confidence</span>` : "";
   el.innerHTML = `
     ${decided ? `<button class="item-summary" type="button" aria-expanded="false" title="Show the whole item">
-      <span class="vtag v-${verdictCls(sum.decision)}">${esc(verdictLabel(sum.decision))}</span>
+      <span class="vtag v-${verdictCls(sum.decision, it)}">${esc(verdictLabel(sum.decision, state.cfg, it))}</span>
       <span class="sum-title">${esc(it.title)}</span>
       ${sum.detail ? `<span class="sum-detail">${esc(sum.detail)}</span>` : ""}
       <span class="sum-id">${esc(it.id)}</span>
@@ -580,7 +613,7 @@ function renderItem(it) {
             ${conf}
             ${isMetrics ? `<span class="flag flag-metrics">needs metrics</span>` : ""}
             ${isTeam ? `<span class="flag flag-team">team</span>` : ""}
-            ${stampHtml(meta)}
+            ${stampHtml(it)}
           </span>
           ${decided ? `<button class="icon-btn" data-collapse type="button" title="Fold to one line" aria-label="Fold to one line">▴</button>` : ""}
           <details class="more">
@@ -609,7 +642,8 @@ function renderItem(it) {
       ${notesHtml ? `<div class="notes">${notesHtml}</div>` : ""}
       <div class="decide">
         ${isGeneral ? "" : `
-        <div class="actions">
+        ${optionButtons.length ? `<div class="opts" role="group" aria-label="Answers for this card">${optionButtons.join("")}</div>` : ""}
+        <div class="actions${optionButtons.length ? " after-opts" : ""}">
           <span class="lbl">decide</span>
           ${verdictButtons.filter((b) => !/data-d="unify"/.test(b)).join("\n          ")}
           <button class="btn ghost b-team" data-team type="button" aria-pressed="${isTeam}"
@@ -684,7 +718,7 @@ function renderItem(it) {
 
   /* ---- notes / rationale: the item's one and only text field ---- */
   const ta = decideWrap.querySelector(".note-add textarea");
-  ta.placeholder = placeholderFor(isGeneral);
+  ta.placeholder = placeholderFor(isGeneral, it);
   const noteBtn = decideWrap.querySelector("[data-note]");
   // One line until there is more to say; grows with the text up to a cap.
   const grow = () => {
@@ -759,7 +793,7 @@ function renderItem(it) {
       closeUnify();
       // requires_detail (decision-mill.yaml): the detail is the actionable part, so
       // a click with an empty box asks for it instead of writing a bare verdict.
-      const def = declaredDef(btn.dataset.d);
+      const def = OL.optionFor(eff, btn.dataset.d);
       if (def && def.requires_detail && !ta.value.trim()) {
         showHint(`${def.label} needs a detail — type what should happen in the box below, then click ${def.label} again.`);
         ta.focus();
@@ -1060,9 +1094,12 @@ function syncDock() {
 // Built from the set's decisions so the help matches the buttons.
 function buildSpecHelp() {
   const keyed = decisions().filter((d) => d.key);
+  const lib = (state.cfg && state.cfg.options) || [];
   App.help.spec = [
     ["j / k", "next / previous item"],
     [keyed.map((d) => d.key).join(" · "), `${keyed.map((d) => d.label.replace(/…$/, "")).join(" · ")} the focused item (textarea text rides along)`],
+    ["1–9", `on a card with its own options${lib.length ? ` (${lib.map((o) => o.label).join(", ")}, …)` : ""}: pick option N; the set's verdicts move to letters (Defer d). Each button shows its key.`],
+    ["Enter / a", "take the focused card's recommended answer"],
     ["u", "undo the focused item's decision"],
     ["e", "open the focused item's first citation"],
     ...(state.cfg && (state.cfg.instructions || state.cfg.customDecisions) ? [["i", "show or hide the instructions and verdict legend"]] : []),
@@ -1092,7 +1129,19 @@ App.keyHandlers.spec = (e) => {
     return true;
   }
   if (e.key === "i" && setInstructions(!state.instrOpen)) return true;
-  const verdict = decisions().find((d) => d.key && d.key === e.key.toLowerCase());
+  const fit = focused && state.items.find((it) => it.id === focused.dataset.id);
+  const eff = fit ? effOf(fit) : null;
+  const k = e.key.toLowerCase();
+  let verdict = eff ? shownOf(eff).find((d) => d.key && d.key === k) : decisions().find((d) => d.key && d.key === k);
+  // Enter (or a, when nothing binds it) takes the recommended answer. Enter on a
+  // focused button or link keeps its native meaning, and never re-decides a card
+  // that already has a verdict (a or the option's key does, on purpose).
+  const onControl = e.target && e.target.closest && e.target.closest("button, a, summary, select");
+  const enter = e.key === "Enter" && !onControl && !e.shiftKey && fit && DECIDABLE(fit);
+  if (enter && VL.isDecided(fit.meta)) { toast("Already decided — press a or an option's key to change it, u to undo"); return true; }
+  if (!verdict && eff && eff.recommended && (enter || k === "a")) {
+    verdict = eff.options.find((d) => d.id === eff.recommended);
+  }
   if (verdict && focused) {
     // A folded decided item unfolds first, so a re-decision is visible.
     if (focused.classList.contains("collapsed")) {
@@ -1102,6 +1151,10 @@ App.keyHandlers.spec = (e) => {
     }
     const btn = partOf(focused, `[data-d="${CSS.escape(verdict.id)}"]`);
     if (btn) btn.click(); else toast(`${verdict.label} does not apply to this item`);
+    return true;
+  }
+  if (enter && !(eff && eff.recommended)) {
+    toast("This card has no recommended answer — pick a key");
     return true;
   }
   if (e.key === "u") {
@@ -1138,7 +1191,8 @@ onPhoneChange(() => {
   if (isPhone() && !state.focusId) { const first = itemEls()[0]; if (first) state.focusId = first.dataset.id; }
   for (const ta of document.querySelectorAll(".decide textarea")) {
     const card = ta.closest(".decide")?.__card;
-    if (card) ta.placeholder = placeholderFor(!DECIDABLE(state.items.find((it) => it.id === card.dataset.id) || {}));
+    const cit = state.items.find((it) => it.id === card?.dataset.id) || {};
+    if (card) ta.placeholder = placeholderFor(!DECIDABLE(cit), cit);
   }
   applyFocus();
 });

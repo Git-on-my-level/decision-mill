@@ -4,6 +4,8 @@
 
 import * as yaml from "js-yaml";
 import { LOCATOR_ROOTS, LOCATOR_PREFIX, DELEGATED_PATHS } from "./config.js";
+import { DEFAULT_DECISIONS } from "./specset.js";
+import { effectiveOptions, optionFor } from "./options.js";
 
 export const ID_KINDS = ["DIV", "INV", "FC", "UNK", "FEAT", "DEC", "GEN"];
 const KIND_ALT = ID_KINDS.join("|");
@@ -171,7 +173,9 @@ function locatorProblem(loc, schemes) {
 // errors = structural problems that make the file unusable or unsafe to edit.
 // warnings = vocabulary/consistency drift worth fixing but not blocking.
 // opts (all optional): { schemes: locator schemes this set accepts (default: the
-// global roots), decisions: the set's declared decision list (decision-mill.yaml) }.
+// global roots), decisions: the set's declared decision list (decision-mill.yaml),
+// setDecisions: the set's verdicts defaults included, options: its option library }.
+// The last two resolve a card's own `options:` (FORMAT.md "Card options").
 export function validateSpecText(text, slug, opts = {}) {
   const { frontmatter, items, errors } = parseSpec(text);
   const schemes = schemesOf(opts);
@@ -192,7 +196,18 @@ export function validateSpecText(text, slug, opts = {}) {
     if (!meta.kind) errs.push(`${it.id}: missing kind`);
     else if (!KINDS.has(meta.kind)) warns.push(`${it.id}: unknown kind '${meta.kind}' (want ${[...KINDS].join("|")})`);
     if (meta.status != null && !STATUSES.has(meta.status)) warns.push(`${it.id}: unknown status '${meta.status}' (want ${[...STATUSES].join("|")})`);
-    if (meta.decision != null && !isValidDecision(meta.decision, declared)) {
+    // A card with its own options: the block must resolve, and a stored decision
+    // must be one of the card's effective options (its own, or a set verdict).
+    const eff = meta.options != null ? effectiveOptions(it, { decisions: opts.setDecisions || opts.decisions || DEFAULT_DECISIONS, options: opts.options || [] }) : null;
+    if (eff) {
+      errs.push(...eff.errors.map((e) => `${it.id}: ${e}`));
+      warns.push(...eff.warnings.map((w) => `${it.id}: ${w}`));
+    }
+    if (eff && eff.own) {
+      if (meta.decision != null && !optionFor(eff, meta.decision)) {
+        warns.push(`${it.id}: decision '${meta.decision}' is not one of this card's options (want ${eff.options.filter((o) => o.id !== "unify").map((o) => o.id).join("|")})`);
+      }
+    } else if (meta.decision != null && !isValidDecision(meta.decision, declared)) {
       warns.push(`${it.id}: unknown decision '${meta.decision}' (want ${[...new Set([...declared, "keep", "change", "defer", "file"])].join("|")}|unify-on-<x>)`);
     }
     if (meta.confidence != null && !CONFIDENCES.has(meta.confidence)) warns.push(`${it.id}: unknown confidence '${meta.confidence}' (want high|med|low)`);
@@ -237,7 +252,7 @@ export function validateSpecText(text, slug, opts = {}) {
     for (const n of Array.isArray(meta.notes) ? meta.notes : []) {
       if (!n || typeof n !== "object" || typeof n.text !== "string") errs.push(`${it.id}: malformed note entry`);
     }
-    warns.push(...decisionWarnings(it, { declared, decisions: opts.decisions || null }));
+    warns.push(...decisionWarnings(it, { declared, decisions: eff && eff.own ? eff.options : opts.decisions || null }));
   }
   if (!items.length) errs.push("no adjudicable items found");
   return { frontmatter, items, errors: errs, warnings: warns };
@@ -259,7 +274,7 @@ export function decisionWarnings(it, { declared = new Set(), decisions = null } 
     else if (!CHANGE_PREFIX_RE.test(detail)) out.push(`${it.id}: ${d} detail lacks remove:/change:/resolved:/moot: prefix`);
   } else {
     const def = (decisions || []).find((x) => x.id === d);
-    if (def && def.requires_detail && !detail) out.push(`${it.id}: '${d}' requires a decision_detail (requires_detail in decision-mill.yaml)`);
+    if (def && def.requires_detail && !detail) out.push(`${it.id}: '${d}' requires a decision_detail (requires_detail in ${def.source === "card" ? "the card's options" : "decision-mill.yaml"})`);
   }
   // Legacy stored spellings — the UI always displayed Change/Keep for these.
   if (d === "toss" && !declared.has("toss")) out.push(`${it.id}: legacy decision 'toss' — repair to 'change'`);

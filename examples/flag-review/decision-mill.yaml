@@ -1,0 +1,24 @@
+# FICTIONAL spec-set config for the per-card options example (see FORMAT.md,
+# "Card options"). The set keeps the plain Accept / Change / Defer verdicts for
+# cards that need nothing more, and a library of flag outcomes that flag cards
+# pull in by id, so every flag card can be decided with one key.
+instructions: |
+  Each card is one **feature flag** in the (fictional) todo app. Flag cards list
+  their real outcomes as buttons, with the recommendation marked:
+
+  - **1–9** pick the card's outcomes; **Enter** (or **a**) takes the recommended one.
+  - **d** defers. Text in the box rides along as your reason.
+  - **Your own answer**: type it and press **⌘/Ctrl+Enter**.
+
+  Cards without outcomes keep **1 Accept / 3 Defer** and the typed answer.
+decisions:
+  - {id: accept, label: Accept, hint: "do what the card recommends", tone: positive}
+  - {id: change, label: Change, hint: "do something else: type what first", requires_detail: true}
+  - {id: defer, label: Defer, hint: "not now; push the review date out"}
+options:
+  - {id: graduate, label: Graduate now, hint: "delete the flag, the feature stays on", tone: positive}
+  - {id: extend, label: Extend, hint: "keep the flag; new review date", requires_detail: true}
+  - {id: ops_kill, label: Keep as ops kill, hint: "a permanent stop lever, no review date"}
+  - {id: kill, label: Kill, hint: "delete the flag and the feature", tone: negative}
+locator_roots:
+  code: ../code   # code:web/src/TodoList.tsx -> examples/code/web/src/TodoList.tsx
