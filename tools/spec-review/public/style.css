@@ -128,13 +128,23 @@ body[data-mode="label"] #main { padding-bottom: 12px; }
 .verdict-legend td:nth-child(2) { white-space: nowrap; }
 .verdict-legend .vtag { font-weight: 600; }
 .verdict-legend .req { color: var(--metric); font-style: normal; }
-/* Verdict keys appear on the focused item only (keyboard use), so the buttons stay quiet. */
-.item .actions .btn kbd { display: none; }
-.item.focused .actions .btn kbd { display: inline-block; margin-left: 5px; font-size: 10.5px; opacity: .7; }
+/* Every decide button shows its key; quiet until its item has the focus. */
+.item .actions .btn kbd { display: inline-block; margin-left: 5px; font-size: 10.5px; opacity: .4; }
+.item.focused .actions .btn kbd { opacity: .75; }
+.verdict-legend .legend-sub { padding-top: 10px; color: var(--faint); font-size: 11.5px; }
 #progress .next-spec { margin-left: 2px; }
 #toolbar { position: sticky; top: 0; z-index: 5; background: var(--bg); display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 /* Four controls, not eight chips: All / Open / Decided + one kind select. */
 #filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.batch-toggle { margin-left: 6px; background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 5px; padding: 3px 10px; font-size: 12px; }
+.batch-toggle.on { color: var(--ink); border-color: var(--unify); }
+/* Batch view: title, explanation and the answer buttons only. */
+#items.batch .item .prose, #items.batch .item .sources, #items.batch .item .notes, #items.batch .item .metrics,
+#items.batch .item .deep-dive, #items.batch .item .note-add, #items.batch .item .detail-hint:empty { display: none; }
+#items.batch .item .explanation { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+#items.batch .item .opt-hint { display: none; }
+#items.batch .item.focused .note-add { display: flex; }
+#items.batch .item { margin: 8px 0; }
 .filter { background: var(--panel); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font-size: 12px; }
 .filter.on { color: var(--ink); border-color: var(--muted); }
 .filter small { font: 11px var(--mono); color: var(--faint); margin-left: 3px; }
@@ -260,6 +270,22 @@ details.more { position: relative; }
 
 .notes { margin-top: 12px; }
 .decide { margin-top: 2px; }
+/* Card options (FORMAT.md "Card options"): one large button per answer, keys
+   1–9, the recommended one outlined. Wraps to as many columns as fit. */
+.opts { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; margin-top: 13px; }
+.btn.opt { display: flex; align-items: flex-start; gap: 9px; text-align: left; padding: 8px 12px; min-height: 44px; border-radius: 7px; }
+.btn.opt kbd { flex: none; margin-top: 1px; opacity: .45; }
+.item.focused .btn.opt kbd { opacity: .85; }
+.opt-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.opt-label { font-weight: 600; font-size: 13.5px; overflow-wrap: anywhere; }
+.opt-hint { font-size: 12px; color: var(--muted); line-height: 1.35; }
+.btn.opt.t-keep:hover { border-color: var(--keep); }
+.btn.opt.t-toss:hover { border-color: var(--toss); }
+.btn.rec { border-color: var(--keep); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--keep) 60%, transparent); }
+.rec-tag { flex: none; font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--keep); margin-left: 6px; align-self: center; }
+.opt-text .rec-tag { margin: 0; align-self: flex-start; }
+.btn.chosen { background: color-mix(in srgb, var(--unify) 14%, var(--panel-2)); border-color: var(--unify); }
+.actions.after-opts { margin-top: 8px; }
 .note-row { font-size: 13px; padding: 4px 0; }
 .note-row .nmeta { color: var(--faint); font-family: var(--mono); font-size: 10.5px; margin-top: 2px; }
 .note-row.sys .ntext { color: var(--faint); font-size: 11.5px; }
@@ -806,6 +832,13 @@ mark.pd-b { background: color-mix(in srgb, var(--metric) 22%, transparent); bord
   #mbar-label .mb-id { font: 600 12.5px var(--mono); color: var(--muted); }
   #mbar-label .mb-pos { font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #mbar .decide { margin: 0; }
+  #mbar .opts { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 6px; margin: 0 0 6px; }
+  #mbar .btn.opt { min-height: 48px; padding: 8px 10px; border-radius: 10px; font-size: 15px; align-items: center; }
+  #mbar .opt-label { font-size: 15px; line-height: 1.25; }
+  #mbar .opt-hint { display: none; }
+  #mbar .opt-text .rec-tag { font-size: 9.5px; }
+  #mbar .actions .rec-tag { display: none; }
+  .batch-toggle { min-height: 40px; border-radius: 8px; white-space: nowrap; }
   #mbar .actions { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; margin: 0; }
   #mbar .actions .lbl, #mbar .actions .b-team, #mbar .btn kbd, #mbar .undo-long { display: none !important; }
   #mbar .actions .btn { min-height: 46px; padding: 6px 4px; font-size: 15px; font-weight: 600; border-radius: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -865,7 +898,7 @@ mark.pd-b { background: color-mix(in srgb, var(--metric) 22%, transparent); bord
 }
 /* Touch screens: no keyboard-hint chips. */
 @media (hover: none) and (pointer: coarse) {
-  .item.focused .actions .btn kbd, .note-add .b-answer kbd, #search-trigger kbd, .rb-btn kbd { display: none; }
+  .item .actions .btn kbd, .btn.opt kbd, .note-add .b-answer kbd, #search-trigger kbd, .rb-btn kbd { display: none; }
 }
 
 /* Speaker mode: label voices by ear. Large targets, one card at a time. */

@@ -96,6 +96,15 @@ Practical notes from real sessions:
   exactly one thing: still open.
 - Type the reasoning *first*, then hit the verdict. The textarea's contents ride along
   as `decision_detail`. This is the whole interaction: one box, one click.
+- **Give cards real options instead of Accept/Change.** When a card's answer is one of a
+  few known outcomes (a flag: graduate / extend / keep as ops kill / kill), write them
+  as the card's `options:` with the recommendation as `proposed` (FORMAT.md, "Card
+  options"; put shared ones in the set's `options:` library). The reviewer presses `1`
+  to `4`, or Enter for the recommendation, instead of typing "Graduate now" into a
+  Change box card after card — slow, and the typed variants are hard for the consuming
+  agent to read back. Keep the typed answer for the genuinely unforeseen.
+- On a batch of similar cards, **Batch view** shrinks every card to its title,
+  explanation and answer buttons, so a group can be ruled on in one pass.
 - **Defer** is a real answer and is much better than a bad decision. So is **Team**,
   which parks an item for a live walkthrough without pretending it was decided.
 - Reverse mistakes immediately — one-click deciding is only safe because **↩ Undo

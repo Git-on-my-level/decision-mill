@@ -102,7 +102,7 @@ const nothingConfigured = !specsConfigured && !labelsConfigured;
 function defaultSpecsDirs() {
   const own = path.resolve(PROJECT_ROOT, "specs");
   if (fs.existsSync(own)) return [own];
-  const examples = ["examples/specs", "examples/decision-register"].map((d) => path.resolve(PROJECT_ROOT, d)).filter((d) => fs.existsSync(d));
+  const examples = ["examples/specs", "examples/decision-register", "examples/flag-review"].map((d) => path.resolve(PROJECT_ROOT, d)).filter((d) => fs.existsSync(d));
   return examples.length ? examples : [own];
 }
 

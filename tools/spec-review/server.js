@@ -18,6 +18,7 @@ import { handleLabelApi, searchTasks, taskSummaries } from "./lib/label-api.js";
 import { discoverTasks } from "./lib/task.js";
 import { loadSpecSetConfig, rootsForSet, publicSetConfig, declaredIds, splitLocator, SET_CONFIG_FILE } from "./lib/specset.js";
 import { parseUntil, requestTimeout, longPoll, etagOf } from "./lib/wait.js";
+import { effectiveOptions, resolveWrite, optionFor } from "./lib/options.js";
 
 const HERE = path.dirname(url.fileURLToPath(import.meta.url));
 
@@ -71,7 +72,7 @@ function setConfig(set) {
   if (hit && hit.key === key) return hit.value;
   const cfg = loadSpecSetConfig(set.dir);
   const roots = rootsForSet(cfg);
-  const value = { cfg, roots, opts: { schemes: Object.keys(roots), decisions: cfg.customDecisions ? cfg.decisions : null }, declared: declaredIds(cfg) };
+  const value = { cfg, roots, opts: { schemes: Object.keys(roots), decisions: cfg.customDecisions ? cfg.decisions : null, setDecisions: cfg.decisions, options: cfg.options }, declared: declaredIds(cfg) };
   cfgCache.set(set.dir, { key, value });
   return value;
 }
@@ -368,15 +369,27 @@ const server = http.createServer(async (req, res) => {
         // stored value is always canonical — Keep = good as-is, Change = needs
         // adjustment per the recorded recommendation. An id the set declares in
         // decision-mill.yaml is stored exactly as declared (even `accept`).
-        const decision = canonicalDecision(String(body.decision), sc.declared);
-        if (!isValidDecision(decision, sc.declared)) {
-          const want = [...new Set([...sc.declared, "keep", "change", "defer", "file"])].join("|");
-          return json(res, 400, { error: `invalid decision '${decision}' — want ${want}|unify-on-<slug>` });
+        // A card with its own `options:` takes only those (plus the set verdicts
+        // it keeps); the accept verdict records the recommended option.
+        const target = parseSpec(text).items.find((x) => x.id === id);
+        const eff = target && target.meta.options != null ? effectiveOptions(target, sc.cfg) : null;
+        let decision, def;
+        if (eff && eff.own) {
+          const r = resolveWrite(eff, body.decision);
+          if (r.error) return json(res, 400, { error: r.error });
+          decision = r.decision;
+          def = optionFor(eff, decision);
+        } else {
+          decision = canonicalDecision(String(body.decision), sc.declared);
+          if (!isValidDecision(decision, sc.declared)) {
+            const want = [...new Set([...sc.declared, "keep", "change", "defer", "file"])].join("|");
+            return json(res, 400, { error: `invalid decision '${decision}' — want ${want}|unify-on-<slug>` });
+          }
+          def = sc.cfg.customDecisions ? sc.cfg.decisions.find((d) => d.id === decision) : null;
         }
         const detail = body.decision_detail ? String(body.decision_detail).trim() : "";
-        const def = sc.cfg.customDecisions ? sc.cfg.decisions.find((d) => d.id === decision) : null;
         if (def && def.requires_detail && !detail) {
-          return json(res, 400, { error: `'${def.label}' needs a decision_detail — say what should happen (requires_detail in ${SET_CONFIG_FILE})` });
+          return json(res, 400, { error: `'${def.label}' needs a decision_detail — say what should happen (requires_detail in ${def.source === "card" ? "the card's options" : SET_CONFIG_FILE})` });
         }
         updated = updateItem(text, id, (meta) => {
           meta.decision = decision;
@@ -579,7 +592,7 @@ server.listen(PORT, HOST, () => {
     const n = specFiles(s).length;
     console.log(`  specs [${s.id}]: ${s.dir}  (${n} spec${n === 1 ? "" : "s"})  ${base}/#/spec/${s.id}`);
     if (cfg.present) {
-      console.log(`    ${SET_CONFIG_FILE}: ${cfg.customDecisions ? `decisions ${cfg.decisions.map((d) => `${d.id}${d.key ? `[${d.key}]` : ""}`).join(" ")}` : "default decisions"}${cfg.instructions ? " · instructions" : ""}`);
+      console.log(`    ${SET_CONFIG_FILE}: ${cfg.customDecisions ? `decisions ${cfg.decisions.map((d) => `${d.id}${d.key ? `[${d.key}]` : ""}`).join(" ")}` : "default decisions"}${cfg.options.length ? ` · options ${cfg.options.map((o) => o.id).join(" ")}` : ""}${cfg.instructions ? " · instructions" : ""}`);
       for (const e of cfg.errors) console.error(`    ERROR ${e}`);
     }
     for (const [k, r] of Object.entries(roots)) if (!(k in LOCATOR_ROOTS) || LOCATOR_ROOTS[k] !== r) console.log(`    locator root ${k}: -> ${r}${missing(r)}`);

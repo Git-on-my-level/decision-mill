@@ -178,6 +178,8 @@ test("validate.js: the bundled examples (both spec sets) pass, with locators", (
   assert.equal(r.status, 0, r.stdout);
   assert.match(r.stdout, /ok {3}todo-lists\.md/);
   assert.match(r.stdout, /ok {3}flags\.md/);
+  assert.match(r.stdout, /flag-review .*options graduate\/extend\/ops_kill\/kill/);
+  assert.equal((r.stdout.match(/ok {3}flags\.md/g) || []).length, 2, "both flag registers pass");
 });
 
 test("HTTP: a set's decisions, requires_detail, roots and config errors", async () => {

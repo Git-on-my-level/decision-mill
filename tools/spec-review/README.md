@@ -106,6 +106,12 @@ It is re-read when it changes; no restart needed.
   instructions with a legend of every verdict, its key and hint; it opens by itself
   on the first visit to the set. A verdict with `requires_detail` asks for the
   reason first instead of writing a bare verdict.
+- **Card options**: a card with its own `options:` (FORMAT.md, "Card options") shows
+  them as large buttons with keys `1…9` and the `proposed` one marked recommended;
+  Enter or `a` takes the recommendation, the set's remaining verdicts move to letter
+  keys (Defer `d`), and the typed answer still works. Every decide button shows its
+  key. **Batch view** in the toolbar shrinks each card to title, explanation and
+  buttons, for ruling on a run of similar cards.
 - Opening a set lands on the first spec with open items; when the current spec has
   none left, the toolbar links to the next spec that does.
 - Stored ids match the buttons: Keep writes `decision: keep` (good as-is, with the
