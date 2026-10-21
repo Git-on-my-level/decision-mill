@@ -105,6 +105,11 @@ repository, so the code panel works immediately. Click a citation, hit **Keep** 
 **Change** / **Defer** (or focus an item with `j` and press `1`/`2`/`3`), watch
 `examples/specs/todo-lists.md` change on disk.
 
+**Line comments** — open *Which notes are best?*, select a phrase in one of the
+three versions and press `c`: what you say about a span is stored with the letter
+it sits under, and Results counts it against the model behind that letter once the
+card is labeled.
+
 **Label mode** — open *Keep or noise — fictional voice notes*. Press `1`/`2`/`3` to
 label each card; the next one appears. Model answers stay hidden until you have
 labeled a card. After six cards the round is done; **Results** shows how two
@@ -134,6 +139,36 @@ http://127.0.0.1:4610`; the reviewer is then taken from the `Tailscale-User-Logi
 header unless `REVIEWER` is set. Read labels back with `node labels.js stats <task>`.
 Agents building tasks should follow [`skills/decision-mill/SKILL.md`](skills/decision-mill/SKILL.md).
 
+### One server for everything
+
+Several label roots and spec sets can share one server and one URL. List them in a
+hub file and start the server with it (or put it at `~/.config/decision-mill/hub.yaml`,
+which a bare `node server.js` picks up when no `--specs`/`--labels` is given):
+
+```yaml
+# ~/.config/decision-mill/hub.yaml — paths are relative to this file; ~ works
+title: David's mill
+port: 4610
+labels:
+  - ~/.local/share/labels                        # tasks name their own workspace:
+  - {dir: ~/work/acme-labels, workspace: acme}   # or the root assigns one
+specs:
+  - {dir: ~/src/acme/specs, workspace: acme}
+workspaces:                                      # optional titles for the switcher
+  acme: {title: Acme rewrite, project: Acme, owner: david}
+locator_roots: {acme: ~/src/acme}                # optional
+reviewer: david                                  # optional
+```
+
+```sh
+node server.js --hub ~/.config/decision-mill/hub.yaml   # or DECISION_MILL_HUB=… ; flags add more roots
+```
+
+The sidebar gets a workspace switcher, URLs become `#/w/<workspace>/…` (old links
+still work), Home opens on an inbox of what waits on you across every workspace, and
+finished work can be paused, marked done or archived out of the way
+([LABELS.md](LABELS.md#workspaces-and-lifecycle)).
+
 ### Installing it for a real program
 
 1. Copy `FORMAT.md` into your tracker's `specs/` directory and fill in its two knobs:
@@ -162,11 +197,13 @@ Agents building tasks should follow [`skills/decision-mill/SKILL.md`](skills/dec
 
 All optional; every knob is an environment variable read in
 `tools/spec-review/lib/config.js`. A few have CLI-flag twins (`--specs`, `--labels`,
-`--port`, `--host`, `--reviewer`).
+`--port`, `--host`, `--reviewer`, `--hub`). A hub file can set `port`, `host`,
+`reviewer`, `project_name` and `locator_roots`; flags and environment win over it.
 
 | Variable | Default | What it does |
 | -------- | ------- | ------------ |
-| `PORT` | `4599` | Bind port. Use different ports to run two programs' UIs at once. |
+| `DECISION_MILL_HUB` | `~/.config/decision-mill/hub.yaml` when it exists and no roots are given | A hub file listing label roots and spec sets for one server (`--hub FILE`). Empty turns the default off. |
+| `PORT` | `4599` | Bind port. A hub file can set it; prefer one hub server over several ports. |
 | `HOST` | `127.0.0.1` | Bind address. Prefer a reverse proxy (`tailscale serve`) over widening it. |
 | `SPECS_DIR` | `<repo>/specs`, else `<repo>/examples/specs` | Where the spec files live. Comma-separate several spec sets; the first is the default for set-less API calls. |
 | `LABELS_ROOT` | `<repo>/examples/labels` when nothing else is configured | Directories holding label tasks (comma-separated). Configuring only one mode hides the other mode's example. |
@@ -185,7 +222,7 @@ All optional; every knob is an environment variable read in
 | [`FORMAT.md`](FORMAT.md) | The spec format: item structure, decision vocabulary, the optional per-set `decision-mill.yaml`, and the rules that keep decisions readable after the spec is gone. |
 | [`LABELS.md`](LABELS.md) | The label task format: task.yaml, items.jsonl, append-only label files, rounds, and the agent API. |
 | [`PLAYBOOK.md`](PLAYBOOK.md) | Running extraction swarms, metrics agents, decision consumption, and removal records. |
-| [`tools/spec-review/`](tools/spec-review) | The local UI for both modes, the format linter, and the labels CLI. Two dependencies, no build step. |
+| [`tools/spec-review/`](tools/spec-review) | The local UI for both modes, the format linter, the labels CLI, and `letters.js` (balanced blind variant letters). Two dependencies, no build step. |
 | [`skills/decision-mill/`](skills/decision-mill/SKILL.md) | The skill future agents load to pick a mode, build a label task, launch it, and read results back. |
 | [`docs/design-notes.md`](docs/design-notes.md) | The real labeling sessions label mode was designed from, and which finding drove which choice. |
 | [`examples/`](examples) | A fictional todo-app spec, a fictional decision register with its own `decision-mill.yaml`, the fictional code they cite, and fictional label tasks, so the tool works on a fresh clone. |

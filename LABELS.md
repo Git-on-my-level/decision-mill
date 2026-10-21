@@ -15,8 +15,11 @@ repository) and point the server at that root. The bundled tasks under `examples
     task.yaml                     # what is asked, the buttons, blind mode, models
     items.jsonl                   # one item per line
     labels/<reviewer>.jsonl       # append-only; latest row per item wins
+    comments/<reviewer>.jsonl     # append-only line comments (see Line comments)
     media/                        # optional audio/images referenced by items
     waves/wave-<n>.json           # waves mode only: frozen waves (never rewritten)
+  _archive/<task-id>/             # archived tasks: same layout, shown as archived
+  workspace.yaml                  # optional: the root's default workspace (see Workspaces)
 ```
 
 A labels root may also itself be a task directory.
@@ -46,6 +49,12 @@ meta_display: [started_at, duration_s, word_count]   # meta keys shown on the ca
 pending: |                         # optional: shown while items.jsonl is empty or missing
   Items are built by `fetch.sh` on the build host; reload when it finishes.
 waves: {count: 3, size: 20}        # optional: label in frozen waves instead of rounds (see Waves)
+workspace: omi-notes               # optional: groups tasks in the sidebar (see Workspaces)
+status: active                     # active (default) | paused | done | archived
+decision: Ship Jev as the keep/discard model?   # the question these labels answer
+enough_when: {ci_half_width: 0.1}  # when to stop: {labels: N}, {rounds: N}, {comments: N}, {ci_half_width: x, model: id}
+minutes_per_round: 12              # for the home inbox's time estimate
+comment_tags: [wrong-name, missing, hallucinated, too-long, formatting]   # quick tags on line comments (this is the default)
 models:                            # how Results compares each model with the human
   - id: jev
     score_path: hidden.jev.p_discard   # optional: enables the threshold curve
@@ -71,6 +80,9 @@ models:                            # how Results compares each model with the hu
 | `pending` | Markdown shown in place of the card while `items.jsonl` is empty or missing. An empty task is a normal **waiting for items** state, never an error; say who runs what to fill it. Once items exist the note is ignored (`/api/tasks` reports `pending: false`) and `validate.js` warns until you remove it. |
 | `models[].score_path`, `verdict_path` | Dotted paths into each item (usually under `hidden`). Verdicts must use label ids. |
 | `models[].positive_label` | Required for the threshold curve unless it can be inferred (the model's most common verdict at or above its threshold). Set it explicitly. |
+| `workspace`, `status` | See [Workspaces and lifecycle](#workspaces-and-lifecycle). |
+| `decision`, `enough_when`, `minutes_per_round` | What the task is for and when to stop; see [Purpose](#purpose-decision-enough_when-minutes_per_round). `validate.js` warns while one is missing. |
+| `comment_tags` | Quick tags offered under a line comment: ids (or `{id, label}`). Default `wrong-name, missing, hallucinated, too-long, formatting`; `[]` turns tags off. |
 
 ## items.jsonl
 
@@ -259,6 +271,134 @@ Who is the reviewer: an explicit `REVIEWER` env / `--reviewer` wins; otherwise t
 `Tailscale-User-Login` header that `tailscale serve` adds; otherwise `reviewer`.
 Human rows are always attributed by the server; a client cannot claim another name.
 
+## Line comments
+
+A winner label carries little signal on its own: in a blind round comparing three
+meeting-note variants, the useful feedback was "it didn't name Kory", which could only
+be said in chat. Line comments put that on the card.
+
+**In the UI.** Select text anywhere in the displayed content — a variant's notes, a
+transcript segment, a proposal's change, evidence or policy, a pair line, the
+summary — then press `c` (or tap the floating **Comment** button), type, pick quick
+tags, and press Enter. The span is highlighted and listed under the content; a click
+on either finds the other. **Edit** and **Delete** are on each of your comments, and
+`u` undoes the last comment action just like a label (a delete is undone by a
+restore). Comments never change a label. `c` is unavailable if a task binds it as a
+label key; the button still works.
+
+**Blocks and anchors.** Every commentable block has an anchor, stored with the
+comment:
+
+| Content | Anchor |
+| ------- | ------ |
+| markdown | the text of each top-level heading (`## A` → `A`; text before the first heading → `intro`; no headings → `body`). Nested headings stay inside their block. |
+| transcript | `seg:<segment id or index>`; inside evidence `evidence:<n>:seg:…`, inside context `context:<n>:seg:…` |
+| proposal | `change`, `evidence:<n>`, `policy` |
+| pair | `<side>@<m:ss>`, or `A+B@<m:ss>` for a merged line (Combined and Full views) |
+| other | `summary`, `body` |
+
+So a comment on variant A of a blind A/B/C card is keyed by the **letter**, never the
+model: blind stays blind. Offsets are character offsets in the block's rendered
+text; the quote is stored too, so a highlight is found again if the offsets drift.
+
+**comments/\<reviewer\>.jsonl** is append-only; the latest row per `comment_id` wins:
+
+```json
+{"comment_id": "c-mgz3k1-a8f2qd", "item_id": "conv-uuid", "anchor": "A", "quote": "Participants: Nik Shevchenko",
+ "start": 41, "end": 69, "text": "didn't name Kory", "tags": ["missing"],
+ "reviewer": "david", "source": "human", "at": "2026-10-21T10:31:07.221Z"}
+{"comment_id": "c-mgz3k1-a8f2qd", "item_id": "conv-uuid", "text": "didn't name Kory or Ana", "reviewer": "david", "source": "human", "at": "…"}
+{"comment_id": "c-mgz3k1-a8f2qd", "item_id": "conv-uuid", "deleted": true, "reviewer": "david", "source": "human", "at": "…"}
+```
+
+An edit row carries only what changed (`text`, `tags`); `deleted: true` hides a
+comment and `deleted: false` restores it. Only the reviewer who wrote a comment can
+change it. Comments live beside `labels/`, never in it.
+
+**After unblinding.** Results shows **Line comments**: a table of comments by the
+model behind each letter (from `hidden.letters`, else the model whose `verdict_path`
+value is the letter — the `hidden.<model>_letter` convention) and by tag, with
+counts, and each group's comments with links to their cards. Letters on cards the
+reviewer has not labeled stay blind and are counted under "(blind: label the card
+first)". Comments on other blocks are grouped by anchor.
+
+```sh
+node labels.js comments <task> [--reviewer R] [--json]   # same grouping, letters mapped to models
+node labels.js wait <task> --url … --until commented     # a new comment since the wait began
+node labels.js wait <task> --url … --until commented:5   # at least 5 comments
+```
+
+## Variant letters
+
+When a card shows several variants under letters (A/B/C notes from three models),
+assign the letters with a **seeded Latin-square rotation across items**, never an
+independent shuffle per item. In one real 4-card round a shuffle put the same
+variant under letter A on 3 of the 4 cards.
+
+```sh
+node tools/spec-review/letters.js --variants prod,v2_deep,v4 --items items.jsonl --seed <task-id> --summary
+# {"item_id": "…", "letters": {"A": "v4", "B": "prod", "C": "v2_deep"}}   one line per item
+```
+
+Item *i* uses rotation *i* of one seeded order, so over every *k* consecutive items
+each variant takes each letter once, and over any number of items its counts differ
+by at most one. Write the mapping to `hidden.letters` (and, so Results compares the
+variants, `hidden.<variant>_letter` with a `models[]` entry per variant whose
+`verdict_path` points at it), and render the variants in letter order under `## A`,
+`## B`, … headings. The same function is `assignLetters()` in `lib/letters.js`.
+`validate.js` warns when a variant's letter-position counts differ by more than one.
+`examples/labels/variants-demo/` is a fictional task built this way.
+
+## Workspaces and lifecycle
+
+**Workspaces** group tasks and spec sets so one server can hold several programs
+without one flat sidebar. A task's workspace is, in order: `workspace:` in task.yaml;
+the `workspace:` its labels root has in the hub file (README, "One server for
+everything"); the `id` of a `workspace.yaml` in its labels root; else `default`.
+`workspace.yaml` (in a labels root or a specs directory) is optional:
+
+```yaml
+id: omi-notes          # default: the directory name
+title: Omi meeting notes
+project: Omi
+owner: david
+```
+
+URLs carry the workspace: `#/w/<workspace>/task/<id>`, `#/w/<workspace>/spec/<set>`,
+and `#/w/<workspace>/` for a workspace's home. Old `#/task/<id>` and `#/spec/<set>`
+links keep working and are rewritten in place. The sidebar's workspace switcher
+filters the sidebar and the home screen.
+
+**Lifecycle.** `status: active | paused | done | archived` (default `active`). The
+sidebar and home show active tasks; "Show paused, done or archived" reveals the rest.
+**Archive** (a button on the task) moves the whole task directory into
+`<root>/_archive/` — labels, comments, waves and media move with it and nothing inside
+is rewritten — and **Restore** (on the task, or its card on Home) moves it back. A
+task under `_archive/` is archived whatever its task.yaml says. An active task with
+no label, comment, wave or file change for 7 days is marked **stale**.
+
+### Purpose: decision, enough_when, minutes_per_round
+
+```yaml
+decision: Ship v4 meeting notes as the default?   # the question the labels answer
+enough_when: {labels: 40}                          # or {rounds: 2}, {comments: 10},
+                                                   # {ci_half_width: 0.1, model: v4},
+                                                   # or "labels>=40" / "ci<=0.1"
+minutes_per_round: 8                               # time one round (or wave) takes
+```
+
+Every `enough_when` condition has to hold. `ci_half_width` is the 95% Wilson
+interval's half-width (0.1 = ±10 points) of the named model, or of every model when
+none is named. When it holds, the task header and the inbox say **Enough — you can
+stop**. `validate.js` warns on an active task with items that lacks any of the three.
+
+**The home inbox** lists, across every workspace (or the selected one), each active
+task with cards waiting on the human — the cards left in its current round or wave,
+an estimate in minutes (from `minutes_per_round`, else 20 s a card), the total
+unlabeled, when it was created (`created:` in task.yaml, else the file's birth time)
+and last touched — plus spec sets with open items. Tasks waiting on an agent (between
+waves) or on items are listed underneath.
+
 ## Rounds
 
 Rounds turn a big pile into sittings of `round_size` cards, each spread across
@@ -358,7 +498,9 @@ so it works as a background waiter:
 | `round-done` | the round or wave that was current when the wait began is fully labeled |
 | `labeled:N` (or `'labeled>=N'`, quoted) | the human has labeled at least N items |
 | `done` | every round, or every planned wave, is labeled |
-| `change` | any new label row or frozen wave |
+| `change` | any new label row, comment row or frozen wave |
+| `commented` | a new comment row since the wait began |
+| `commented:N` (or `'commented>=N'`) | at least N live comments |
 
 With `--url` it long-polls the server (`GET /api/task/<id>/wait`); without, it watches
 the task files directly. `--reviewer` names the human; by default it is the reviewer
@@ -409,6 +551,7 @@ node labels.js export <task> --source human            # latest label per item, 
 node labels.js export <task> --format csv
 node labels.js export <task> --final                   # waves: human label, else the stand-in's
 node labels.js waves <task> [--json]                   # waves: status, hold-out, final labels
+node labels.js comments <task> [--json]                # line comments by model (letters mapped) and tag
 ```
 
 Through the server (also how agents **write** stand-in labels — the server's
@@ -422,6 +565,9 @@ per-file queue serializes them with the reviewer's clicks):
 | `POST /api/task/<id>/labels` | Batch of stand-in rows: `{"reviewer": "opus-standin", "labels": [{"item_id", "label", "fields"?, "note"?, "confidence"?, "rationale"?}]}`. Always `model-standin`; all-or-nothing validation. |
 | `POST /api/task/<id>/label` | One row (what the UI sends). With `"source": "model-standin"` and a `reviewer`, a single stand-in row. |
 | `POST /api/task/<id>/undo` | `{"item_id"}` → appends `"label": null`. |
+| `GET /api/task/<id>/comments[?item=]` | Live line comments, every reviewer. `GET …/item/<item>` includes the item's comments too. |
+| `POST /api/task/<id>/comment` | `{"action": "create", "item_id", "anchor", "quote", "start", "end", "text"?, "tags"?}`, or `{"action": "edit" \| "delete" \| "restore", "comment_id", …}`. Attributed to the request's reviewer; answers with the item's live comments. |
+| `POST /api/task/<id>/archive`, `…/restore` | Move the task into `<root>/_archive/` or back (409 if the destination exists). |
 | `GET /api/task/<id>/wait?until=…&timeout=<s>[&since=<etag>&round=<n>&reviewer=]` | Long-poll: answers `{"status": "satisfied"}` as soon as the condition holds, or `{"status": "timeout"}` after `timeout` seconds (default 60, max 900), with the task's progress, `etag` and `baseline`. Pass both back on the next request to chain waits without missing a change. 409 for a condition the task can never meet. |
 
 Writes must be `content-type: application/json`.
@@ -431,8 +577,11 @@ Writes must be `content-type: application/json`.
 `node tools/spec-review/validate.js` checks every task under the configured roots
 alongside the specs: task.yaml structure, duplicate or reserved keys, items that do
 not parse, duplicate ids, unknown content types, malformed proposal or pair content, item or evidence `url`s that are not `http(s)`, model verdicts that are not label
-ids, media paths outside `media/`, unparseable label rows, and wave files that do not
-parse, skip a number, or put an item in two waves.
+ids, media paths outside `media/`, unparseable label or comment rows, and wave files
+that do not parse, skip a number, or put an item in two waves. Tasks under a root's
+`_archive/` are checked too and reported as archived. It also warns when an active
+task lacks `decision`, `enough_when` or `minutes_per_round`, and when a variant's
+blind letter positions are imbalanced (see [Variant letters](#variant-letters)).
 
 ## Speaker mode
 

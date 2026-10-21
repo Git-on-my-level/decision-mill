@@ -176,3 +176,33 @@ Smaller findings from the same sessions: evidence spanned two repositories (one
 locator prefix was not enough → `LOCATOR_ROOTS`); a task kept its `pending:` flag
 after items landed; and three spec files all used the same `<CAP>` code, making ids
 ambiguous references.
+
+## Comments, workspaces and eval hygiene (2026-10-21 feedback)
+
+In a blind round comparing three meeting-note variants, the most useful thing the
+reviewer said was "it didn't name Kory" — in chat, because a card took only a
+winner label. A label says which variant won, not why.
+→ Line comments: select text in any block, press `c`, type, tag. Stored append-only
+per reviewer with the block's anchor (the variant **letter**, so blind stays blind),
+the quote and its offsets; Results groups them by the model behind each letter once
+the card is labeled, and `labels.js comments` does the same for agents.
+
+Tasks piled up: abandoned rounds stayed in one flat sidebar forever, and two servers
+on two ports served labels and a flag-review spec set.
+→ One hub file lists every root, so one server serves everything; `workspace:`
+groups tasks and sets (switcher, `#/w/<id>/…` URLs); `status:` plus an Archive
+button that moves a task into `_archive/` with its labels; a stale mark after 7
+idle days; and a home inbox of what waits on the human, with minutes and age.
+
+Rounds kept going past the point of being useful, and nobody had written down what
+they were for.
+→ `decision:`, `enough_when:` and `minutes_per_round:` on every task; the UI says
+"enough — you can stop" when the condition holds, and `validate.js` asks for them.
+
+In one 4-card round the same variant was letter A on 3 cards: letters had been
+shuffled independently per card.
+→ `letters.js` assigns letters with a seeded Latin-square rotation, and
+`validate.js` warns when a variant's letter positions differ by more than one.
+The same session added three process rules to the skill: read every card before
+handing a round over, never tune a variant on the items being labeled, and read raw
+outputs before relaying any metrics table.
