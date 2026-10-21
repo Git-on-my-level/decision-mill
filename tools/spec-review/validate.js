@@ -13,21 +13,25 @@ import { loadSpecSetConfig, rootsForSet } from "./lib/specset.js";
 import { discoverTasks, loadTask } from "./lib/task.js";
 import { readTaskLabels } from "./lib/labelstore.js";
 import { validateWaves } from "./lib/waves.js";
+import { purposeWarnings } from "./lib/lifecycle.js";
+import { letterBalance } from "./lib/letters.js";
+import { letterModels, readTaskComments } from "./lib/comments.js";
 
-const KNOWN = new Set(["--locators", "--strict", "--help", "-h", "--specs", "--labels"]);
+const KNOWN = new Set(["--locators", "--strict", "--help", "-h", "--specs", "--labels", "--hub"]);
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) {
-  console.log(`usage: node validate.js [--strict] [--locators] [--specs DIR[,DIR]] [--labels ROOT[,ROOT]]
+  console.log(`usage: node validate.js [--strict] [--locators] [--specs DIR[,DIR]] [--labels ROOT[,ROOT]] [--hub FILE]
 
   Lints every spec set (FORMAT.md) and label task (LABELS.md) that is configured
-  (SPECS_DIR / LABELS_ROOT, or the flags). Exit 1 on any error.
+  (SPECS_DIR / LABELS_ROOT, a hub file, or the flags), including tasks under a
+  root's _archive/. Exit 1 on any error.
   --strict     warnings fail the run too (the gate before deleting a spec)
   --locators   check every evidence and inline prose locator against its checkout`);
   process.exit(0);
 }
 for (let i = 0; i < args.length; i++) {
   const a = args[i].split("=")[0];
-  if (a === "--specs" || a === "--labels") { if (!args[i].includes("=")) i++; continue; }
+  if (a === "--specs" || a === "--labels" || a === "--hub") { if (!args[i].includes("=")) i++; continue; }
   if (!KNOWN.has(a)) { console.error(`validate.js: unknown argument '${args[i]}' (see --help)`); process.exit(2); }
 }
 const CHECK_LOCATORS = args.includes("--locators");
@@ -88,14 +92,27 @@ for (const t of discoverTasks(LABELS_ROOTS)) {
   errors.push(...wv.errors); warnings.push(...wv.warnings);
   const labels = readTaskLabels(t.dir);
   const bad = Object.entries(labels.reviewers).filter(([, r]) => r.bad).map(([n, r]) => `labels/${n}.jsonl: ${r.bad} unparseable row(s) (skipped)`);
+  const comments = readTaskComments(t.dir);
+  bad.push(...Object.entries(comments.reviewers).filter(([, r]) => r.bad).map(([n, r]) => `comments/${n}.jsonl: ${r.bad} unparseable row(s) (skipped)`));
+  // Purpose (decision / enough_when / minutes_per_round) for tasks still in use.
+  if (!t.archived && items.length) warnings.push(...purposeWarnings(task));
+  // Blind variant letters: every variant should sit under every letter about
+  // equally often (lib/letters.js assigns them that way).
+  const bal = letterBalance(items, (it) => letterModels(task, it));
+  for (const v of t.archived ? [] : bal.imbalanced) {
+    warnings.push(`variant '${v.variant}' letter positions are imbalanced over ${bal.items} items (${Object.entries(v.per).map(([l, n]) => `${l} ${n}`).join(", ")}); assign letters with a seeded Latin-square rotation (node letters.js), not a shuffle per item`);
+  }
+  const status = t.archived ? "archived" : task.status;
+  const tag = status !== "active" ? `${status}, ` : "";
   if (errors.length) {
     failed = true;
-    console.log(`FAIL task ${t.id}`);
+    console.log(`FAIL task ${t.id}${t.archived ? " (archived)" : ""}`);
     for (const e of errors) console.log(`  - ${e}`);
   } else {
     const labeled = Object.values(labels.reviewers).reduce((a, r) => a + [...r.states.values()].filter((s) => s.label != null).length, 0);
-    console.log(items.length ? `ok   task ${t.id}  (${items.length} items, ${labeled} reviewer labels)`
-      : `ok   task ${t.id}  (waiting for items${task.pending ? "" : "; add task.yaml pending: to say how they get made"})`);
+    const ncom = Object.values(comments.reviewers).reduce((a, r) => a + [...r.comments.values()].filter((c) => !c.deleted).length, 0);
+    console.log(items.length ? `ok   task ${t.id}  (${tag}${items.length} items, ${labeled} reviewer labels${ncom ? `, ${ncom} comments` : ""})`
+      : `ok   task ${t.id}  (${tag}waiting for items${task.pending ? "" : "; add task.yaml pending: to say how they get made"})`);
   }
   for (const w of [...warnings, ...bad]) { warnCount++; console.log(`  warn task ${t.id}: ${w}`); }
 }
