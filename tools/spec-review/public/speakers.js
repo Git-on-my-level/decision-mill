@@ -114,7 +114,7 @@ window.Speakers = (() => {
   function frame(body) {
     const v = $("#label-view");
     const tabs = el("nav", { class: "tabs" }, ["label", "transcript", "audit", "results"].map((x) =>
-      el("a", { class: `tab${tab === x ? " on" : ""}`, href: `#/task/${enc(taskId)}${x === "label" ? "" : `/${x}`}` }, x[0].toUpperCase() + x.slice(1))));
+      el("a", { class: `tab${tab === x ? " on" : ""}`, href: `${App.taskHref(taskId)}${x === "label" ? "" : `/${x}`}` }, x[0].toUpperCase() + x.slice(1))));
     v.replaceChildren(el("div", { class: "lv sp" }, el("header", { class: "lv-head" }, el("h2", {}, task.title), tabs), body));
   }
   function convChips() {
@@ -195,7 +195,7 @@ window.Speakers = (() => {
       const next = data.conversations.find((x) => x.id !== c.id && groupsOf(x).some((q) => q.label == null));
       body.append(el("section", { class: "sp-card sp-done" }, el("h3", {}, "Every group here is labeled."),
         el("p", {}, "Skim the transcript to catch anything that sounds off, or keep going."),
-        el("div", { class: "sp-row" }, btn({ class: "sp-pill", onclick: () => { location.hash = `#/task/${enc(taskId)}/transcript`; } }, "Skim transcript"),
+        el("div", { class: "sp-row" }, btn({ class: "sp-pill", onclick: () => { location.hash = `${App.taskHref(taskId)}/transcript`; } }, "Skim transcript"),
           next ? btn({ class: "sp-pill primary", onclick: () => { convId = next.id; advance(); render(); } }, `Next: ${next.title}`) : null)));
       return;
     }
@@ -312,7 +312,7 @@ window.Speakers = (() => {
     if (unfinished.length && !resultsOk) {
       body.append(el("section", { class: "sp-card sp-done" }, el("h3", {}, "Results stay hidden while you label."),
         el("p", {}, `Seeing how each system scores can nudge borderline calls. ${unfinished.length} conversation${unfinished.length > 1 ? "s are" : " is"} under 95% labeled.`),
-        el("div", { class: "sp-row" }, btn({ class: "sp-pill primary", onclick: () => { location.hash = `#/task/${enc(taskId)}`; } }, "Keep labeling"),
+        el("div", { class: "sp-row" }, btn({ class: "sp-pill primary", onclick: () => { location.hash = `${App.taskHref(taskId)}`; } }, "Keep labeling"),
           btn({ class: "sp-pill", onclick: () => { resultsOk = true; render(); } }, "Show anyway"))));
       return;
     }

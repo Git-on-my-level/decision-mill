@@ -20,3 +20,7 @@ round_size: 6
 models:
   - id: checker
     verdict_path: hidden.checker.verdict
+workspace: demo
+decision: Is the verifier strict enough to auto-accept edits?
+enough_when: {labels: 6}
+minutes_per_round: 4

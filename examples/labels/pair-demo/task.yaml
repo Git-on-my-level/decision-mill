@@ -19,3 +19,7 @@ meta_display: [started_at, pair_type]
 models:
   - id: matcher
     verdict_path: hidden.matcher.verdict
+workspace: demo
+decision: Should the merger treat these overlaps as one event?
+enough_when: {labels: 4}
+minutes_per_round: 3

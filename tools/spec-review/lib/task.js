@@ -12,6 +12,8 @@ import { normalizeWaves } from "./waves.js";
 import { proposalProblems } from "./proposal.js";
 import { pairProblems } from "./pair.js";
 import { httpUrl, shown } from "./url.js";
+import { normalizeCommentTags } from "./comments.js";
+import { normalizeLifecycle, normalizePurpose, ARCHIVE_DIR } from "./lifecycle.js";
 
 export const CONTENT_TYPES = new Set(["transcript", "markdown", "text", "proposal", "pair", "speaker_group"]);
 export const FIELD_TYPES = new Set(["checkbox", "choice", "text"]);
@@ -63,6 +65,11 @@ export function normalizeTask(raw, dirName) {
   t.meta_display = Array.isArray(t.meta_display) ? t.meta_display.map(String) : null;
   // Waves replace rounds when set (see waves.js and LABELS.md#waves).
   t.waves = normalizeWaves(raw && raw.waves, t.id, errors, warnings);
+  // Line comments: the quick tags offered under the comment box.
+  t.comment_tags = normalizeCommentTags(raw && raw.comment_tags, warnings);
+  // Workspace and lifecycle (status, defaults to active), and what the task is for:
+  // the question it answers, when it has enough, how long a round takes.
+  Object.assign(t, normalizeLifecycle(raw, warnings), normalizePurpose(raw, warnings));
 
   t.suggest_threshold = t.suggest_threshold ?? 0.45;
   if (!Number.isFinite(t.suggest_threshold) || t.suggest_threshold < 0 || t.suggest_threshold > 2) errors.push("suggest_threshold must be between 0 and 2");
@@ -182,23 +189,30 @@ export const isTaskDir = (dir) => fs.existsSync(path.join(dir, "task.yaml"));
 
 // Every task under the configured roots: a root may hold task directories or be
 // one. Returns [{id, dir}] with ids unique (later duplicates get a suffix).
+// Tasks moved into `<root>/_archive/` are discovered too, flagged archived: the
+// archive keeps their labels and the Archived filter shows them.
 export function discoverTasks(roots) {
   const out = [];
   const ids = new Set();
-  const add = (dir) => {
+  const add = (dir, root, archived = false, isRoot = false) => {
     let id = path.basename(dir);
     for (let n = 2; ids.has(id); n++) id = `${path.basename(dir)}-${n}`;
     ids.add(id);
-    out.push({ id, dir });
+    out.push({ id, dir, root, archived, isRoot });
+  };
+  const scan = (dir, root, archived) => {
+    for (const name of fs.readdirSync(dir).sort()) {
+      const d = path.join(dir, name);
+      if (name.startsWith(".") || (!archived && name === ARCHIVE_DIR)) continue;
+      try { if (fs.statSync(d).isDirectory() && isTaskDir(d)) add(d, root, archived); } catch { /* unreadable entry */ }
+    }
   };
   for (const root of roots || []) {
     if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) continue;
-    if (isTaskDir(root)) { add(root); continue; }
-    for (const name of fs.readdirSync(root).sort()) {
-      const d = path.join(root, name);
-      if (name.startsWith(".")) continue;
-      try { if (fs.statSync(d).isDirectory() && isTaskDir(d)) add(d); } catch { /* unreadable entry */ }
-    }
+    if (isTaskDir(root)) { add(root, path.dirname(root), path.basename(path.dirname(root)) === ARCHIVE_DIR, true); continue; }
+    scan(root, root, false);
+    const arch = path.join(root, ARCHIVE_DIR);
+    try { if (fs.statSync(arch).isDirectory()) scan(arch, root, true); } catch { /* no archive */ }
   }
   return out;
 }
@@ -213,6 +227,8 @@ export function loadTask(dir, id) {
   catch (e) { errors.push(`task.yaml: ${e.message}`); }
   const norm = normalizeTask(raw, dirName);
   errors.push(...norm.errors);
+  // A task that lives in <root>/_archive/ is archived whatever task.yaml says.
+  if (path.basename(path.dirname(path.resolve(dir))) === ARCHIVE_DIR) norm.task.status = "archived";
   let parsed = { items: [], errors: [], warnings: [] };
   const itemsFile = path.join(dir, "items.jsonl");
   // A missing or empty items.jsonl means the task is waiting for its items (see

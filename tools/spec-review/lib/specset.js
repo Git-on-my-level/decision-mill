@@ -9,6 +9,8 @@
 //     - {id: graduate, label: Graduate, hint: "delete the flag, the feature stays on"}
 //   locator_roots:         # extra evidence-locator schemes for this set
 //     kb: ../knowledge-base  # relative to this file's directory; ~ allowed
+//   workspace: omi-cleanup # optional: the workspace the set belongs to
+//   status: active         # active (default) | paused | done | archived
 //
 // Absent file = the default vocabulary and the global locator roots, i.e. exactly
 // the behavior before this file existed. Everything here is pure over the file so
@@ -20,9 +22,10 @@ import path from "node:path";
 import * as yaml from "js-yaml";
 import { LOCATOR_ROOTS, EXPLICIT_ROOT_SCHEMES, SCHEME_RE, normScheme } from "./config.js";
 import { normalizeOptionLibrary } from "./options.js";
+import { normalizeLifecycle } from "./lifecycle.js";
 
 export const SET_CONFIG_FILE = "decision-mill.yaml";
-export const KNOWN_KEYS = new Set(["instructions", "decisions", "options", "locator_roots"]);
+export const KNOWN_KEYS = new Set(["instructions", "decisions", "options", "locator_roots", "workspace", "status", "decision"]);
 export const TONES = new Set(["positive", "negative", "neutral", "unify"]);
 // Keys spec mode's keyboard model owns; a decision may not bind them.
 export const RESERVED_SPEC_KEYS = new Set(["j", "k", "u", "e", "i", "?", "/", " ", "escape", "enter"]);
@@ -113,14 +116,18 @@ export function answerDecision(decisions) {
 // the UI can show them next to the set and the validator can fail on them.
 export function loadSpecSetConfig(dir) {
   const file = path.join(dir, SET_CONFIG_FILE);
-  const out = { file, present: false, instructions: "", decisions: DEFAULT_DECISIONS.map((d) => ({ ...d })), customDecisions: false, options: [], locatorRoots: {}, errors: [], warnings: [] };
+  const out = { file, present: false, instructions: "", decisions: DEFAULT_DECISIONS.map((d) => ({ ...d })), customDecisions: false, options: [], locatorRoots: {}, workspace: null, status: "active", decision: null, errors: [], warnings: [] };
   if (!fs.existsSync(file)) return out;
   out.present = true;
   let raw;
   try { raw = yaml.load(fs.readFileSync(file, "utf8")); } catch (e) { out.errors.push(`${SET_CONFIG_FILE}: ${e.message}`); return out; }
   if (raw == null) return out;
   if (typeof raw !== "object" || Array.isArray(raw)) { out.errors.push(`${SET_CONFIG_FILE} must be a mapping`); return out; }
-  for (const k of Object.keys(raw)) if (!KNOWN_KEYS.has(k)) out.warnings.push(`${SET_CONFIG_FILE}: unknown key '${k}' (want instructions, decisions, options, locator_roots)`);
+  for (const k of Object.keys(raw)) if (!KNOWN_KEYS.has(k)) out.warnings.push(`${SET_CONFIG_FILE}: unknown key '${k}' (want instructions, decisions, options, locator_roots, workspace, status, decision)`);
+  // Workspace and lifecycle, as for label tasks (lib/lifecycle.js).
+  const lc = normalizeLifecycle(raw, out.warnings);
+  out.workspace = lc.workspace; out.status = lc.status;
+  if (raw.decision != null) out.decision = String(raw.decision);
   if (raw.instructions != null) {
     if (typeof raw.instructions !== "string") out.warnings.push(`${SET_CONFIG_FILE}: instructions must be a markdown string`);
     else out.instructions = raw.instructions;
