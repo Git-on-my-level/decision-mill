@@ -12,7 +12,7 @@ export const MAX_REQUEST_TIMEOUT_S = 900;
 export const DEFAULT_REQUEST_TIMEOUT_S = 60;
 
 export const SPEC_CONDITIONS = "all-decided | no-open | decided>=N | change";
-export const LABEL_CONDITIONS = "wave-ready | round-done | labeled>=N | done | change";
+export const LABEL_CONDITIONS = "wave-ready | round-done | labeled>=N | done | change | commented | commented>=N";
 
 // "3h", "90m", "1h30m", "45s", "2d" or plain seconds -> seconds (null if bad).
 export function parseDuration(v) {
@@ -29,12 +29,17 @@ export function parseDuration(v) {
 export function parseUntil(until, mode) {
   const u = String(until || "").trim();
   // `labeled>=20` needs quoting in a shell; `labeled:20` is the shell-safe spelling.
+  const cm = u.match(/^commented\s*(?:>=|:|=)\s*(\d+)$/);
+  if (cm) {
+    if (mode !== "label") return { error: `'${u}' is not a ${mode}-mode condition (want ${SPEC_CONDITIONS})` };
+    return { kind: "commented>=", n: Number(cm[1]) };
+  }
   const ge = u.match(/^(decided|labeled)\s*(?:>=|:|=)\s*(\d+)$/);
   if (ge) {
     if ((mode === "spec") !== (ge[1] === "decided")) return { error: `'${u}' is not a ${mode}-mode condition (want ${mode === "spec" ? SPEC_CONDITIONS : LABEL_CONDITIONS})` };
     return { kind: `${ge[1]}>=`, n: Number(ge[2]) };
   }
-  const simple = mode === "spec" ? ["all-decided", "no-open", "change"] : ["wave-ready", "round-done", "done", "change"];
+  const simple = mode === "spec" ? ["all-decided", "no-open", "change"] : ["wave-ready", "round-done", "done", "change", "commented"];
   if (simple.includes(u)) return { kind: u };
   return { error: `unknown until '${u}' (want ${mode === "spec" ? SPEC_CONDITIONS : LABEL_CONDITIONS})` };
 }

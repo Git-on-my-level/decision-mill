@@ -14,6 +14,11 @@
 //   node labels.js next-wave <task> [--dry-run] [--early] [--extra] [--allow-missing] [--allow-stale]
 //                                                      select and freeze the next wave (waves/wave-N.json)
 //
+// Line comments (what the human said about a span of a card):
+//   node labels.js comments <task> [--reviewer R] [--json]
+//                                                      grouped by hidden model (letters mapped via
+//                                                      hidden.letters / models[].verdict_path) and tag
+//
 // Waiting for the human (a background waiter; exits 0 satisfied, 2 timeout, 1 error):
 //   node labels.js wait <task> --until wave-ready|round-done|labeled:N|done|change
 //                   [--url http://127.0.0.1:PORT] [--timeout 3h] [--reviewer R] [--json]
@@ -21,7 +26,8 @@
 //     round-done  the round/wave that was current when the wait began is labeled
 //     labeled:N   (or 'labeled>=N') the human has labeled at least N items
 //     done        every round/wave is labeled
-//     change      any new label row or frozen wave
+//     change      any new label row, comment or frozen wave
+//     commented   any new comment row since the wait began (commented:N = at least N comments)
 //   With --url it long-polls the server's GET /api/task/<id>/wait; without, it
 //   watches the task files directly.
 //
@@ -45,6 +51,7 @@ import { readWaves, nextWave, waveStatus, waveReviewer, humanStatesOf, standinSt
 import { buildBrief, parseStandinFile } from "./lib/brief.js";
 import { parseDuration, parseUntil, waitLoop } from "./lib/wait.js";
 import { labelWaitState, labelCondition } from "./lib/label-api.js";
+import { readTaskComments, liveComments, commentSummary } from "./lib/comments.js";
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -53,7 +60,7 @@ const has = (name) => argv.includes(name);
 const positional = argv.slice(1).filter((a, i, arr) => !a.startsWith("--") && !(i > 0 && ["--reviewer", "--source", "--format", "--labels", "--out", "--max-chars", "--offset", "--limit", "--model", "--until", "--url", "--timeout", "--standin"].includes(arr[i - 1])));
 
 function usage(code = 2) {
-  console.error("usage: node labels.js tasks [ROOT...] | stats <task> [--reviewer R] [--fill] [--json] | export <task> [--reviewer R] [--source S] [--final] [--format jsonl|csv]\n       waves <task> | infer-prompt <task> [--out F] | import-standin <task> <file> | next-wave <task> [--dry-run]\n       wait <task> --until wave-ready|round-done|labeled:N|done|change [--url URL] [--timeout 3h]  (see the header of labels.js)");
+  console.error("usage: node labels.js tasks [ROOT...] | stats <task> [--reviewer R] [--fill] [--json] | export <task> [--reviewer R] [--source S] [--final] [--format jsonl|csv]\n       waves <task> | infer-prompt <task> [--out F] | import-standin <task> <file> | next-wave <task> [--dry-run]\n       comments <task> [--reviewer R] [--json]\n       wait <task> --until wave-ready|round-done|labeled:N|done|change|commented [--url URL] [--timeout 3h]  (see the header of labels.js)");
   process.exit(code);
 }
 
@@ -206,7 +213,7 @@ if (cmd === "tasks") {
   if (cfg) console.log("  next: node labels.js next-wave " + t.id + " --dry-run, then without --dry-run");
 } else if (cmd === "wait") {
   const until = flag("--until");
-  if (!until) { console.error("wait: --until is required (wave-ready | round-done | labeled:N | done | change)"); process.exit(1); }
+  if (!until) { console.error("wait: --until is required (wave-ready | round-done | labeled:N | done | change | commented | commented:N)"); process.exit(1); }
   const cond = parseUntil(until, "label");
   if (cond.error) { console.error(`wait: ${cond.error}`); process.exit(1); }
   const totalS = parseDuration(flag("--timeout") || "1h");
@@ -245,6 +252,23 @@ if (cmd === "tasks") {
   else if (r.code === 2) console.log(`timeout: ${until} not reached after ${flag("--timeout") || "1h"} — ${line(r.body)}`);
   if (r.code === 1) console.error(`wait: ${r.message}`);
   process.exit(r.code);
+} else if (cmd === "comments") {
+  const t = resolveTask(positional[0]);
+  const { task, items, errors } = loadTask(t.dir, t.id);
+  if (errors.length) { console.error(`task errors:\n  ${errors.join("\n  ")}`); process.exit(1); }
+  const wantR = flag("--reviewer") ? safeReviewer(flag("--reviewer")) : null;
+  const all = liveComments(readTaskComments(t.dir)).filter((c) => !wantR || safeReviewer(c.reviewer) === wantR || c.file_reviewer === wantR);
+  // The CLI is for whoever built the task: letters are always mapped to models.
+  const sum = commentSummary({ task, items, comments: all });
+  if (has("--json")) { console.log(JSON.stringify(sum, null, 2)); process.exit(0); }
+  console.log(`${task.title}  [${t.id}]`);
+  console.log(`${sum.total} comment(s) on ${sum.items} item(s)${sum.tags.length ? ` · tags: ${sum.tags.map((x) => `${x} ${sum.tagTotals[x]}`).join(", ")}` : ""}`);
+  const short = (s, n) => { const x = String(s || "").replace(/\s+/g, " ").trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
+  for (const g of sum.groups) {
+    const tagLine = [...Object.entries(g.tags).map(([k, v]) => `${k} ${v}`), g.untagged ? `untagged ${g.untagged}` : null].filter(Boolean).join(", ");
+    console.log(`\n${g.kind === "model" ? "model" : g.kind === "letter" ? "variant" : g.kind === "blind" ? "" : "block"} ${g.key}: ${g.total} comment(s) on ${g.items} item(s)${tagLine ? ` — ${tagLine}` : ""}`);
+    for (const c of g.comments) console.log(`  · ${short(c.title || c.item_id, 40)}${c.letter ? ` [${c.letter}]` : ` [${c.anchor}]`} "${short(c.quote, 70)}" — ${c.text || "(no text)"}${c.tags.length ? ` (${c.tags.join(", ")})` : ""}`);
+  }
 } else if (cmd === "export") {
   const t = resolveTask(positional[0]);
   const labels = readTaskLabels(t.dir);

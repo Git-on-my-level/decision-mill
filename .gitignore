@@ -38,6 +38,7 @@ logs
 # git at all (it belongs under ~/.local/share/labels); only the demo's fictional
 # stand-in file is tracked.
 examples/labels/*/labels/*
+examples/labels/*/comments/*
 !examples/labels/demo-task/labels/opus-standin.jsonl
 
 # Regenerated reviewer-specific speaker truth
