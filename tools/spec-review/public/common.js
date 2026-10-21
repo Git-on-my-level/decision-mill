@@ -11,6 +11,15 @@ const App = {
   mode: "home",           // home | spec | label
   keyHandlers: {},        // mode -> (KeyboardEvent) => boolean (true = handled)
   help: {},               // mode -> [[keys, description], ...]
+  // Workspaces: which workspace each task / spec set belongs to (filled from
+  // api/home), and the sidebar's workspace filter (null = all).
+  wsOf: { task: {}, set: {} },
+  wsFilter: null,
+  // Canonical links carry the workspace: #/w/<ws>/task/<id>. Old #/task/<id>
+  // links still route; the label view rewrites them to this form.
+  wsPrefix(ws) { return ws ? `#/w/${encodeURIComponent(ws)}` : "#"; },
+  taskHref(id) { return `${App.wsPrefix(App.wsOf.task[id])}/task/${encodeURIComponent(id)}`; },
+  specHref(setId) { return `${App.wsPrefix(App.wsOf.set[setId])}/spec/${encodeURIComponent(setId)}`; },
 };
 
 // Every request URL is relative ("api/…", never "/api/…") so the app works under

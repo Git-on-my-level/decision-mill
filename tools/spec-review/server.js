@@ -13,7 +13,8 @@ import path from "node:path";
 import url from "node:url";
 import { execFileSync } from "node:child_process";
 import { parseSpec, updateItem, validateSpecText, isValidDecision, canonicalDecision, LINES_RE, dumpMeta, NEW_ID_RE, crossFileWarnings } from "./lib/parser.js";
-import { SPECS_DIRS, LABELS_ROOTS, REPO_ROOT, PORT, HOST, EXCLUDED, LOCATOR_PREFIX, LOCATOR_SCHEME, LOCATOR_ROOTS, PROJECT_NAME, REVIEWER, REVIEWER_EXPLICIT } from "./lib/config.js";
+import { SPECS_DIRS, LABELS_ROOTS, REPO_ROOT, PORT, HOST, EXCLUDED, LOCATOR_PREFIX, LOCATOR_SCHEME, LOCATOR_ROOTS, PROJECT_NAME, REVIEWER, REVIEWER_EXPLICIT, HUB, ROOT_WORKSPACES, HUB_WORKSPACES } from "./lib/config.js";
+import { rootWorkspace, loadWorkspaceFile } from "./lib/lifecycle.js";
 import { handleLabelApi, searchTasks, taskSummaries } from "./lib/label-api.js";
 import { discoverTasks } from "./lib/task.js";
 import { loadSpecSetConfig, rootsForSet, publicSetConfig, declaredIds, splitLocator, SET_CONFIG_FILE } from "./lib/specset.js";
@@ -60,6 +61,30 @@ function setFor(u) {
   const set = want ? sets.find((s) => s.id === want) : sets[0];
   if (!set) throw new HttpError(404, want ? `unknown spec set '${want}'` : "no spec set configured");
   return set;
+}
+
+// Workspaces: a set's decision-mill.yaml `workspace:`, else its hub entry's, else
+// a workspace.yaml in the specs directory, else "default".
+function setWorkspace(set, cfg) {
+  return cfg.workspace || rootWorkspace(set.dir, ROOT_WORKSPACES);
+}
+// Every workspace that holds something, with its title/project/owner from the hub
+// file or a workspace.yaml in one of the roots.
+function workspaceList(tasks, sets) {
+  const meta = new Map();
+  for (const dir of [...LABELS_ROOTS, ...SPECS_DIRS]) {
+    const w = loadWorkspaceFile(dir);
+    if (w && !w.errors.length && !meta.has(w.id)) meta.set(w.id, w);
+  }
+  for (const [id, w] of Object.entries(HUB_WORKSPACES)) meta.set(id, { ...(meta.get(id) || {}), ...Object.fromEntries(Object.entries(w).filter(([, v]) => v != null)) });
+  const ids = new Set([...Object.keys(HUB_WORKSPACES), ...tasks.map((t) => t.workspace), ...sets.map((s) => s.workspace)]);
+  return [...ids].sort().map((id) => {
+    const m = meta.get(id) || {};
+    const ts = tasks.filter((t) => t.workspace === id), ss = sets.filter((s) => s.workspace === id);
+    return { id, title: m.title || null, project: m.project || null, owner: m.owner || null,
+      tasks: ts.length, activeTasks: ts.filter((t) => t.status === "active").length, specSets: ss.length,
+      waiting: ts.filter((t) => t.status === "active" && t.waitingOn === "human").length + ss.filter((s) => s.status === "active" && s.counts.open > 0).length };
+  });
 }
 
 // A set's decision-mill.yaml, re-read whenever the file changes (no restart).
@@ -249,7 +274,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p.startsWith("/api/task")) {
-      const handled = await handleLabelApi(req, res, u, { roots: LABELS_ROOTS, reviewer: reviewerFor(req), readBody, json, HttpError });
+      const handled = await handleLabelApi(req, res, u, { roots: LABELS_ROOTS, reviewer: reviewerFor(req), readBody, json, HttpError, rootWorkspaces: ROOT_WORKSPACES });
       if (handled !== false) return;
     }
 
@@ -260,11 +285,16 @@ const server = http.createServer(async (req, res) => {
         const specs = specFiles(set).map((f) => specSummary(set, f));
         const sum = (k) => specs.reduce((a, s) => a + (s.counts[k] || 0), 0);
         const { cfg } = setConfig(set);
+        let last = 0;
+        for (const f of specFiles(set)) { try { last = Math.max(last, fs.statSync(path.join(set.dir, f)).mtimeMs); } catch { /* raced */ } }
         return { id: set.id, name: set.name, dir: set.dir, specs: specs.map((s) => ({ slug: s.slug, title: s.title, counts: s.counts })),
           counts: { decidable: sum("decidable"), decided: sum("decided"), open: sum("open"), deferred: sum("deferred"), team: sum("team"), needsMetrics: sum("needsMetrics") },
-          instructions: Boolean(cfg.instructions), configErrors: cfg.errors.length };
+          instructions: Boolean(cfg.instructions), configErrors: cfg.errors.length,
+          workspace: setWorkspace(set, cfg), status: cfg.status || "active", decision: cfg.decision || null,
+          lastActivity: last ? new Date(last).toISOString() : null };
       });
-      return json(res, 200, { specSets: sets, tasks: taskSummaries(LABELS_ROOTS, reviewerFor(req)), reviewer: reviewerFor(req) });
+      const tasks = taskSummaries(LABELS_ROOTS, reviewerFor(req), { rootWorkspaces: ROOT_WORKSPACES });
+      return json(res, 200, { specSets: sets, tasks, reviewer: reviewerFor(req), workspaces: workspaceList(tasks, sets), hub: HUB ? { file: HUB.file, title: HUB.title || null } : null });
     }
 
     if (p === "/api/specsets" && req.method === "GET") {
@@ -587,6 +617,10 @@ server.listen(PORT, HOST, () => {
   const base = `http://${shown}:${PORT}`;
   const missing = (r) => (fs.existsSync(r) ? "" : "  (MISSING)");
   console.log(`decision-mill: ${base}/`);
+  if (HUB) {
+    console.log(`  hub: ${HUB.file}`);
+    for (const w of HUB.warnings) console.error(`    warn ${w}`);
+  }
   for (const s of availableSets()) {
     const { cfg, roots } = setConfig(s);
     const n = specFiles(s).length;
@@ -602,8 +636,9 @@ server.listen(PORT, HOST, () => {
     console.log(`  agents: wait for decisions with  node wait.js --url ${base} --until all-decided`);
   }
   for (const r of LABELS_ROOTS) {
-    const tasks = discoverTasks([r]);
-    console.log(`  labels root: ${r}  (${tasks.length} task(s))`);
+    const all = discoverTasks([r]);
+    const tasks = all.filter((t) => !t.archived);
+    console.log(`  labels root: ${r}  (${tasks.length} task(s)${all.length > tasks.length ? `, ${all.length - tasks.length} archived` : ""})`);
     for (const t of tasks.slice(0, 12)) console.log(`    ${t.id}: ${base}/#/task/${encodeURIComponent(t.id)}`);
     if (tasks.length > 12) console.log(`    … ${tasks.length - 12} more on the home screen`);
   }

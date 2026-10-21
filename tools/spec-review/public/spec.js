@@ -91,7 +91,7 @@ function specRowEl(setId, s) {
     const denom = s.counts.decidable || s.counts.total || 1;
     const btn = document.createElement("a");
     btn.className = "spec-row" + (App.mode === "spec" && setId === state.set && s.slug === state.slug ? " active" : "");
-    btn.href = `#/spec/${encodeURIComponent(setId)}/${encodeURIComponent(s.slug)}`;
+    btn.href = `${App.specHref(setId)}/${encodeURIComponent(s.slug)}`;
     const done = Math.round((s.counts.decided / denom) * 100);
     // Segmented meter: every non-open state gets a colored slice, so the unfilled
     // remainder means exactly "still open". Bar fully colored = Open filter empty.
@@ -342,7 +342,7 @@ function renderProgress() {
   const el = $("#progress");
   el.innerHTML = `${decided}/${decidable.length} decided`
     + (metrics ? ` · <a href="#" class="metrics-link${state.status === "needs-metrics" ? " on" : ""}">${metrics} needs metrics</a>` : "")
-    + (next ? ` · <a class="next-spec" href="#/spec/${encodeURIComponent(state.set)}/${encodeURIComponent(next.slug)}" title="next spec with open items">next: ${esc(next.title)} (${next.counts.open} open) →</a>` : "");
+    + (next ? ` · <a class="next-spec" href="${App.specHref(state.set)}/${encodeURIComponent(next.slug)}" title="next spec with open items">next: ${esc(next.title)} (${next.counts.open} open) →</a>` : "");
   const link = el.querySelector(".metrics-link");
   if (link) link.onclick = (e) => {
     e.preventDefault();
@@ -1223,7 +1223,7 @@ const Spec = {
   // Search jump: the target may be hidden by the current filters — widen to All so
   // the jump always lands, then flash the card so the eye finds it.
   async jumpTo(setId, slug, id) {
-    location.hash = `#/spec/${encodeURIComponent(setId)}/${encodeURIComponent(slug)}`;
+    location.hash = `${App.specHref(setId)}/${encodeURIComponent(slug)}`;
     await Spec.open(setId, slug);
     state.status = "all"; state.kind = "all";
     renderFilters(); renderItems();

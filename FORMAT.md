@@ -145,6 +145,9 @@ options:                 # a library of named answers that cards pull in by id
   - {id: ops_kill, label: Keep as ops kill, hint: "a permanent stop lever"}
 locator_roots:           # extra schemes for this set; paths relative to this file
   kb: ../knowledge-base
+workspace: omi-cleanup   # optional: the workspace this set belongs to (sidebar switcher, #/w/<id>/…)
+status: active           # active (default) | paused | done | archived — non-active sets leave the default view
+decision: Which flags can be deleted this quarter?   # optional: shown in the home inbox
 ```
 
 | Key | Meaning |

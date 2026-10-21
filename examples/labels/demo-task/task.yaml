@@ -29,3 +29,8 @@ models:
     positive_label: noise   # a high p_noise means "noise"
   - id: lite
     verdict_path: hidden.lite.verdict
+# What the labels are for, and when to stop (LABELS.md#purpose-and-lifecycle).
+workspace: demo
+decision: Can the ranker's noise threshold go up from 0.8?
+enough_when: {labels: 12}
+minutes_per_round: 3

@@ -17,14 +17,16 @@ const L = {
   rounds: [], roundIdx: 0, pos: 0,   // pos === round length means "round done" screen
   tab: "label",
   cache: new Map(),          // item id -> {item, state}
-  undo: [],                  // item ids labeled this session, most recent last
+  undo: [],                  // this session's actions, most recent last: label item ids, or {kind: "comment", …}
   noteDraft: {}, fieldDraft: {}, noteOpen: false,
   fill: store.get("fill", false),
   itemsFilter: "all", itemsRound: "all", itemsSel: 0,
   saving: false, cardTok: 0, pickTimes: [], sessionStart: null,
   instrOpen: false, instrAuto: false,
   pollTimer: null, flashTimer: null,
+  showComments: store.get("showComments", true),
 };
+const CL = () => globalThis.CommentLogic;
 
 const waves = () => L.data?.waves || null;
 const unitName = () => (waves() ? "Wave" : "Round");
@@ -55,7 +57,7 @@ function gotoItem(id) {
 // CURRENT item, so the URL is copyable mid-session and a paste-back resumes
 // exactly where the reviewer was.
 function settleHash() {
-  const base = `#/task/${enc(L.taskId)}`;
+  const base = App.taskHref(L.taskId);
   const id = L.tab === "label" ? currentId() : null;
   const want = id ? `${base}/item/${enc(id)}` : (L.tab === "label" ? base : `${base}/${L.tab}`);
   if (location.hash !== want) history.replaceState(null, "", want);
@@ -63,6 +65,7 @@ function settleHash() {
 
 function applyTaskData(data) {
   L.data = data; L.task = data.task;
+  if (data.summary) App.wsOf.task[data.task.id] = data.summary.workspace;
   L.index = new Map(data.index.map((r) => [r.id, r]));
   L.rounds = data.rounds;
 }
@@ -102,6 +105,7 @@ const Label = {
     L.tab = tab || "label";
     if (itemId && gotoItem(itemId)) L.tab = "label";
     render();
+    settleHash();
   },
 };
 
@@ -119,10 +123,12 @@ function render() {
       el("h2", { title: t.title }, t.title, t.blind ? el("span", { class: "hc-tag" }, "blind") : null)),
     el("nav", { class: "tabs", role: "tablist" }, tabs.map(([id, name, extra]) =>
       el("a", { class: `tab${L.tab === id ? " on" : ""}`, role: "tab", "aria-selected": String(L.tab === id),
-        href: `#/task/${enc(L.taskId)}${id === "label" ? "" : `/${id}`}` }, name, extra ? el("small", {}, extra) : null))));
+        href: `${App.taskHref(L.taskId)}${id === "label" ? "" : `/${id}`}` }, name, extra ? el("small", {}, extra) : null))));
   const sticky = el("div", { class: "lv-sticky" }, head);
   if (L.tab === "label") sticky.append(el("div", { id: "round-bar", class: "round-bar" }));
   const problems = [];
+  const sm = L.data.summary;
+  if (sm) problems.push(purposeEl(sm));
   if (L.data.errors.length) problems.push(el("div", { class: "lv-errors" }, el("b", {}, "Task errors: "), L.data.errors.map((e) => el("div", {}, `· ${e}`))));
   if (L.data.warnings.length) problems.push(el("details", { class: "lv-warnings" }, el("summary", {}, `${L.data.warnings.length} format warning(s)`), L.data.warnings.map((e) => el("div", {}, `· ${e}`))));
   const body = el("div", { class: "lv-body" });
@@ -130,6 +136,30 @@ function render() {
   if (L.tab === "items") renderItems(body);
   else if (L.tab === "results") renderResults(body);
   else renderLabel(body);
+}
+
+// What the task is for and where it stands: its decision, enough_when (and a
+// plain "you can stop" once it holds), status, staleness, archive / restore.
+function purposeEl(sm) {
+  const bits = [];
+  if (sm.status !== "active") bits.push(el("span", { class: `hc-tag st-${sm.status}` }, sm.status));
+  if (sm.stale) bits.push(el("span", { class: "hc-tag stale", title: "nothing labeled or changed for 7 days" }, "stale"));
+  if (sm.decision) bits.push(el("span", { class: "lp-decision" }, el("b", {}, "Decision: "), sm.decision));
+  if (sm.enough) bits.push(el("span", { class: `lp-enough${sm.enough.met ? " met" : ""}` }, sm.enough.met ? "Enough — you can stop. " : "", sm.enough.text));
+  const act = sm.archived
+    ? el("button", { type: "button", class: "btn ghost sm", onclick: () => moveTask("restore") }, "Restore")
+    : sm.canArchive ? el("button", { type: "button", class: "btn ghost sm", title: "Move this task into _archive/ (labels and comments are kept)", onclick: () => moveTask("archive") }, "Archive") : null;
+  return el("div", { class: `lv-purpose${sm.enough?.met ? " met" : ""}` }, bits, el("span", { class: "ab-spacer" }), act);
+}
+async function moveTask(what) {
+  if (what === "archive" && !confirm(`Archive "${L.task.title}"? It moves into _archive/ with its labels and comments, and leaves the default view. Restore brings it back.`)) return;
+  try {
+    await postJSON(`api/task/${enc(L.taskId)}/${what}`, {});
+    toast(what === "archive" ? "Archived — restore it from Home → Show inactive" : "Restored");
+    await Shell.refreshNav();
+    if (what === "archive") location.hash = App.wsPrefix(App.wsFilter) + "/";
+    else { await loadTask(L.taskId); render(); }
+  } catch (e) { toast(`${what} failed: ${e.message}`, "err"); }
 }
 
 function refreshTaskRow() {
@@ -269,6 +299,7 @@ async function renderCardArea({ scroll = false } = {}) {
   const slot = $("#card-slot");
   if (!slot) return;
   stopPolling();
+  closeCommentBox();
   const ids = roundIds();
   if (!ids.length) {
     slot.replaceChildren(waves() && L.index.size ? waveDone() : emptyTask());
@@ -300,6 +331,7 @@ async function renderCardArea({ scroll = false } = {}) {
   }},`Label similar items too · accept ${similar.length} confident suggestions`));
   const bar = actionBar(entry);
   slot.replaceChildren(...(assist.childNodes.length ? [assist] : []), cardEl(entry), bar);
+  paintComments();
   App.dock(bar);
   if (scroll) scrollToCard();
   prefetch();
@@ -334,9 +366,11 @@ function transcriptEl(segments, audioRef, opts = {}) {
       class: "seg-time", type: audioRef ? "button" : null, title: audioRef ? "play from here" : null, tabindex: audioRef ? "-1" : null,
       onclick: audioRef ? () => { const a = audioRef(); if (a) { a.currentTime = Number(s.start); a.play().catch(() => {}); } } : null,
     }, fmtClock(s.start)) : null;
+    // Each segment's words are one commentable block: `seg:<id or index>`.
+    const anchor = `${opts.anchor || ""}seg:${s.id != null ? s.id : (segments || []).indexOf(s)}`;
     box.append(el("div", { class: `seg${s.is_user ? " me" : ""}${same ? " cont" : ""}` },
       same ? null : el("div", { class: "seg-head" }, el("span", { class: "seg-who" }, who), time),
-      el("div", { class: "seg-text" }, opts.mark ? opts.mark(s.text) : s.text, same && time ? time : null)));
+      el("div", { class: "seg-text" }, el("span", { class: "cm-block", "data-anchor": anchor }, opts.mark ? opts.mark(s.text) : s.text), same && time ? time : null)));
     prev = who;
   }
   if (!box.childNodes.length) box.append(el("div", { class: "seg empty-seg" }, "(empty transcript)"));
@@ -346,10 +380,13 @@ function transcriptEl(segments, audioRef, opts = {}) {
 function contentEl(c, audioRef) {
   if (!c) return el("div", { class: "empty-seg" }, "(no content)");
   if (c.type === "transcript") return transcriptEl(c.segments, audioRef);
-  if (c.type === "markdown") return el("div", { class: "prose doc", html: md(c.body) });
+  // Markdown is split at its top-level headings so each variant ("## A", "## B")
+  // or section is its own commentable block, anchored by the heading text.
+  if (c.type === "markdown") return el("div", { class: "prose doc" }, CL().splitSections(c.body).map((sec) =>
+    el("div", { class: "cm-block cm-section", "data-anchor": sec.anchor, html: md(sec.md) })));
   if (c.type === "proposal") return proposalEl(c);
   if (c.type === "pair") return pairEl(c);
-  return el("div", { class: "plain doc" }, String(c.body ?? ""));
+  return el("div", { class: "plain doc cm-block", "data-anchor": "body" }, String(c.body ?? ""));
 }
 
 /* ---------- proposal: a proposed change, its evidence, the rules ---------- */
@@ -486,19 +523,19 @@ function evidenceTitle(e) {
     : el("span", { class: "pp-ev-title" }, title);
 }
 
-function evidenceEl(e, mark) {
+function evidenceEl(e, mark, j = 0) {
   const segs = Array.isArray(e.segments) ? e.segments : [];
   const cited = Array.isArray(e.cited) ? new Set(e.cited) : null;
   const shown = cited ? segs.filter((s) => cited.has(s?.id)) : segs;
   const rest = cited ? segs.filter((s) => !cited.has(s?.id)) : [];
-  return el("div", { class: "pp-ev" },
+  return el("div", { class: "pp-ev cm-block", "data-anchor": `evidence:${j + 1}` },
     el("div", { class: "pp-ev-head" },
       evidenceTitle(e),
       e.tag ? el("span", { class: "pp-tag" }, e.tag) : null),
     factsEl(e.facts, mark),
     e.text ? el("p", { class: "pp-ev-text" }, mark ? mark(e.text) : e.text) : null,
-    shown.length ? el("div", { class: "pp-cited" }, rest.length ? el("div", { class: "pp-cited-label" }, "Cited") : null, transcriptEl(shown, null, { mark })) : null,
-    rest.length ? el("details", { class: "pp-more" }, el("summary", {}, `Rest of the transcript · ${rest.length} segment${rest.length === 1 ? "" : "s"}`), transcriptEl(rest, null, { mark })) : null,
+    shown.length ? el("div", { class: "pp-cited" }, rest.length ? el("div", { class: "pp-cited-label" }, "Cited") : null, transcriptEl(shown, null, { mark, anchor: `evidence:${j + 1}:` })) : null,
+    rest.length ? el("details", { class: "pp-more" }, el("summary", {}, `Rest of the transcript · ${rest.length} segment${rest.length === 1 ? "" : "s"}`), transcriptEl(rest, null, { mark, anchor: `evidence:${j + 1}:` })) : null,
     el("div", { class: "pp-ev-foot" }, e.ref ? el("span", { class: "pp-ref" }, e.ref) : null, rawEl(e.raw)));
 }
 
@@ -514,7 +551,7 @@ function policyEl(c) {
       el("span", { class: "hint" }, focused.length ? ` — ${focused.length} most relevant shown; open for all` : " — open to read")),
     el("ul", {}, rules.map((r) => el("li", { class: isFocus(r) ? "focus" : null }, r))));
   det.addEventListener("toggle", () => { if (pinned) pinned.hidden = det.open; });
-  return el("section", { class: "pp-policy" }, det, pinned);
+  return el("section", { class: "pp-policy cm-block", "data-anchor": "policy" }, det, pinned);
 }
 
 function proposalEl(c) {
@@ -523,7 +560,7 @@ function proposalEl(c) {
   const mark = marker(terms);
   const evidence = Array.isArray(c.evidence) ? c.evidence : [];
   return el("div", { class: "proposal" },
-    el("section", { class: "pp-change", "aria-label": "Proposed change" },
+    el("section", { class: "pp-change cm-block", "data-anchor": "change", "aria-label": "Proposed change" },
       el("div", { class: "pp-h" }, "Proposed change"),
       ch.summary ? el("div", { class: "pp-summary" }, ch.kind && !("before" in ch || "after" in ch) ? el("span", { class: "pp-kind" }, ch.kind) : null, ch.summary) : null,
       changeLine(ch),
@@ -535,7 +572,7 @@ function proposalEl(c) {
         terms.some((t) => t.side !== "term") ? el("span", { class: "pp-legend" },
           terms.some((t) => t.side === "before") ? el("mark", { class: "hl hl-before" }, "old value") : null,
           terms.some((t) => t.side === "after") ? el("mark", { class: "hl hl-after" }, "new value") : null) : null),
-      evidence.map((e) => evidenceEl(e || {}, mark))) : null,
+      evidence.map((e, j) => evidenceEl(e || {}, mark, j))) : null,
     policyEl(c));
 }
 
@@ -623,11 +660,11 @@ function pairEl(c) {
       const wa = pairWho(r.a), wb = pairWho(r.b);
       return el("div", { class: "pl pl-both" },
         el("div", { class: "pl-meta" }, el("span", { class: "pbadge both", title: "said on both sides" }, `${ids[0]}+${ids[1]}`), el("span", { class: "pl-time" }, fmtClock(r.start)), el("span", { class: "pl-who" }, wa === wb ? wa : `${wa} / ${wb}`)),
-        el("div", { class: "pl-text" }, r.a.text.trim() === r.b.text.trim() ? r.a.text : pairDiffRuns(r.a.text, r.b.text)));
+        el("div", { class: "pl-text cm-block", "data-anchor": `${ids[0]}+${ids[1]}@${fmtClock(r.start)}` }, r.a.text.trim() === r.b.text.trim() ? r.a.text : pairDiffRuns(r.a.text, r.b.text)));
     }
     return el("div", { class: `pl pl-one ${sideOf(r.kind)}` },
       el("div", { class: "pl-meta" }, el("span", { class: `pbadge ${sideOf(r.kind)}`, title: `only in ${r.kind}` }, r.kind), el("span", { class: "pl-time" }, fmtClock(r.start)), el("span", { class: "pl-who" }, pairWho(r.seg))),
-      el("div", { class: "pl-text" }, r.seg.text));
+      el("div", { class: "pl-text cm-block", "data-anchor": `${r.kind}@${fmtClock(r.start)}` }, r.seg.text));
   };
   const more = (dir, n) => el("button", { class: "pair-more", type: "button", onclick: () => {
     if (dir < 0) from = Math.max(0, from - PAIR_MORE); else to = Math.min(rows.length, to + PAIR_MORE);
@@ -678,6 +715,8 @@ function pairEl(c) {
     tabs.replaceChildren(...PAIR_VIEWS.map(([k, name]) => el("button", { class: `seg-btn${view === k ? " on" : ""}`, type: "button", role: "tab", "aria-selected": String(view === k), tabindex: "-1",
       onclick: () => { view = k; store.set(`pairview:${L.taskId}`, k); paint(); } }, name)));
     if (view === "side") paintSide(); else paintCombined(view === "full");
+    // A repaint replaces the lines: put the comment highlights back.
+    queueMicrotask(() => paintComments());
   }
   root.__repaint = paint;
   paint();
@@ -707,13 +746,13 @@ function contextEl(ctx) {
   const sorted = [...ctx].sort((a, b) => (order[a.relation] ?? 1) - (order[b.relation] ?? 1));
   return el("section", { class: "context" },
     el("h4", {}, `Around it · ${ctx.length} nearby`),
-    sorted.map((c) => {
+    sorted.map((c, k) => {
       const hasMore = (Array.isArray(c.segments) && c.segments.length) || c.content;
       const head = [el("span", { class: `rel rel-${esc(c.relation || "x")}` }, relationText(c)), el("strong", {}, c.title || "(untitled)")];
       if (!hasMore) return el("div", { class: "ctx-item" }, el("div", { class: "ctx-line" }, head), c.summary ? el("p", {}, c.summary) : null);
       return el("details", { class: "ctx-item" }, el("summary", { class: "ctx-line" }, head),
         c.summary ? el("p", {}, c.summary) : null,
-        c.content ? contentEl(c.content) : transcriptEl(c.segments));
+        c.content ? contentEl(c.content) : transcriptEl(c.segments, null, { anchor: `context:${k + 1}:` }));
     }));
 }
 
@@ -780,7 +819,7 @@ function cardEl(entry) {
   const { node: media, audio } = mediaEl(item);
   const summary = item.summary ? el("details", { class: "summary", open: t.summary === "open" },
     el("summary", {}, "Summary", el("span", { class: "hint" }, " — written by a model from this transcript; it can make a fragment look meaningful")),
-    el("p", {}, item.summary)) : null;
+    el("p", { class: "cm-block", "data-anchor": "summary" }, item.summary)) : null;
   const segs = item.content?.type === "transcript" ? (item.content.segments || []).length : 0;
   const chips = metaChips(item);
   // The source link sits in the title row, the far end of the card from the sticky
@@ -798,6 +837,7 @@ function cardEl(entry) {
     segs ? el("p", { class: "whole" }, item.truncated ? `Showing ${segs} segments of a longer item.` : `The whole item — all ${segs} segment${segs === 1 ? "" : "s"}, not an excerpt.`) : null,
     summary,
     contextEl(item.context),
+    commentsEl(entry),
     revealEl(item, entry.state?.label ?? null));
 }
 
@@ -877,6 +917,217 @@ function revealEl(item, cur) {
   const n = item.reveal.filter((r) => cur && r.verdict != null && r.verdict !== cur && !labelDef(cur)?.abstain).length;
   return el("details", { class: "reveal" }, el("summary", {}, "Model answers", el("span", { class: "hint" }, n ? ` — ${n} disagree with you` : cur ? " — all agree" : "")), rows);
 }
+
+/* ---------- line comments ----------
+   Select text in any block of the card (a variant's notes, a transcript segment,
+   a proposal part), press c or tap the floating Comment button, type, Enter.
+   Stored append-only per reviewer (comments/<reviewer>.jsonl) with the block's
+   anchor, the quote and its offsets; shown as highlights plus a list under the
+   content. Edits and deletes are new rows, and u undoes them like labels. */
+const cmKey = () => (taskKeys().has("c") ? null : "c");
+const blockOf = (node) => (node && (node.nodeType === 1 ? node : node.parentElement))?.closest?.(".lcard [data-anchor]") || null;
+const currentComments = () => L.cache.get(currentId())?.comments || [];
+
+// The selection, as {anchor, start, end, quote} inside one block of the current
+// card, or null. A selection that spans blocks is cut at the end of the first.
+function selectionTarget() {
+  const sel = window.getSelection && window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+  const range = sel.getRangeAt(0);
+  const block = blockOf(range.startContainer);
+  if (!block || !block.closest(".lcard") || block.closest(".lcard").dataset.id !== currentId()) return null;
+  const text = block.textContent;
+  const pre = document.createRange();
+  pre.selectNodeContents(block);
+  pre.setEnd(range.startContainer, range.startOffset);
+  const start = pre.toString().length;
+  let end;
+  if (block.contains(range.endContainer)) { pre.setEnd(range.endContainer, range.endOffset); end = pre.toString().length; }
+  else end = text.length;
+  const t = CL().trimRange(text, start, end);
+  if (!t) return null;
+  return { anchor: block.dataset.anchor, start: t.start, end: t.end, quote: t.quote, rect: range.getBoundingClientRect() };
+}
+
+function floatBtn() {
+  let b = document.getElementById("cm-float");
+  if (!b) {
+    b = el("button", { id: "cm-float", type: "button", class: "cm-float", hidden: true, tabindex: "-1",
+      onmousedown: (e) => e.preventDefault(), // keep the selection
+      onclick: () => openCommentBox() }, "Comment", cmKey() ? enter("c") : null);
+    document.body.append(b);
+  }
+  return b;
+}
+function syncFloat() {
+  const b = floatBtn();
+  const t = App.mode === "label" && L.tab === "label" && !$("#cm-pop") ? selectionTarget() : null;
+  if (!t) { b.hidden = true; return; }
+  b.hidden = false;
+  const r = t.rect;
+  const top = r.top > 48 ? r.top - 40 : r.bottom + 8;
+  b.style.top = `${Math.max(8, Math.min(window.innerHeight - 48, top))}px`;
+  b.style.left = `${Math.max(8, Math.min(window.innerWidth - 140, r.left + r.width / 2 - 50))}px`;
+}
+let selTimer = null;
+document.addEventListener("selectionchange", () => { clearTimeout(selTimer); selTimer = setTimeout(syncFloat, 120); });
+window.addEventListener("scroll", () => { if (!floatBtn().hidden) syncFloat(); }, true);
+
+function anchorChip(anchor) {
+  const letter = CL().anchorLetter(anchor);
+  return el("span", { class: `cm-anchor${letter ? " letter" : ""}`, title: letter ? `variant ${letter}` : `block ${anchor}` }, letter || anchor);
+}
+
+// The comment box: for a new comment (target) or an edit (existing comment).
+function openCommentBox(existing = null) {
+  const target = existing ? null : selectionTarget();
+  if (!existing && !target) { flash("Select some text on the card first"); return; }
+  closeCommentBox();
+  floatBtn().hidden = true;
+  const tags = L.task.comment_tags || [];
+  const chosen = new Set(existing ? existing.tags : []);
+  const text = el("textarea", { class: "cm-text", rows: "2", placeholder: "What is wrong or right here? Enter saves · Shift+Enter new line · Esc cancels", spellcheck: "true" });
+  text.value = existing ? existing.text || "" : "";
+  const tagRow = tags.length ? el("div", { class: "cm-tags" }, tags.map((t) => {
+    const b = el("button", { type: "button", class: `cm-tag${chosen.has(t.id) ? " on" : ""}`, "aria-pressed": String(chosen.has(t.id)), tabindex: "-1",
+      onmousedown: (e) => e.preventDefault(),
+      onclick: () => { if (chosen.has(t.id)) chosen.delete(t.id); else chosen.add(t.id); b.classList.toggle("on", chosen.has(t.id)); b.setAttribute("aria-pressed", String(chosen.has(t.id))); text.focus(); } }, t.label);
+    return b;
+  })) : null;
+  const save = async () => {
+    const body = existing
+      ? { action: "edit", comment_id: existing.comment_id, text: text.value, tags: [...chosen] }
+      : { action: "create", item_id: currentId(), anchor: target.anchor, quote: target.quote, start: target.start, end: target.end, text: text.value, tags: [...chosen] };
+    const ok = await writeComment(body, existing ? { kind: "comment", action: "edit", comment_id: existing.comment_id, item_id: existing.item_id, prev: { text: existing.text, tags: existing.tags } } : null);
+    if (ok) { closeCommentBox(); window.getSelection()?.removeAllRanges(); }
+  };
+  text.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeCommentBox(); }
+    else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); }
+  });
+  const q = existing ? existing.quote : target.quote;
+  const pop = el("div", { id: "cm-pop", class: "cm-pop", role: "dialog", "aria-label": existing ? "Edit comment" : "New comment" },
+    el("div", { class: "cm-pop-q" }, anchorChip(existing ? existing.anchor : target.anchor), el("q", {}, q.length > 160 ? `${q.slice(0, 157)}…` : q)),
+    text, tagRow,
+    el("div", { class: "cm-pop-row" },
+      el("button", { type: "button", class: "btn primary", onclick: save }, existing ? "Save" : "Comment", enter("↵")),
+      el("button", { type: "button", class: "btn ghost", onclick: closeCommentBox }, "Cancel", enter("esc"))));
+  document.body.append(pop);
+  if (target && !isPhone()) {
+    const r = target.rect;
+    pop.style.top = `${Math.max(8, Math.min(window.innerHeight - 240, r.bottom + 8))}px`;
+    pop.style.left = `${Math.max(8, Math.min(window.innerWidth - 380, r.left))}px`;
+  } else pop.classList.add("docked");
+  text.focus();
+}
+function closeCommentBox() { $("#cm-pop")?.remove(); }
+
+// One write; the response carries the item's live comments. `undoEntry` overrides
+// what u will reverse (create/delete are derived from the action).
+async function writeComment(body, undoEntry = null, { quiet = false } = {}) {
+  try {
+    const res = await postJSON(`api/task/${enc(L.taskId)}/comment`, body);
+    const itemId = res.row.item_id;
+    const entry = L.cache.get(itemId);
+    if (entry) entry.comments = res.comments;
+    const row = L.index.get(itemId);
+    if (row) row.comments = res.comments.length;
+    if (!quiet) L.undo.push(undoEntry || { kind: "comment", action: body.action, comment_id: res.row.comment_id, item_id: itemId });
+    if (itemId === currentId()) refreshComments();
+    if (!quiet) flash(body.action === "delete" ? "Comment deleted · u undo" : body.action === "edit" ? "Comment saved · u undo" : "✓ Comment saved · u undo");
+    return true;
+  } catch (e) {
+    toast(`Comment not saved: ${e.message}`, "err");
+    return false;
+  }
+}
+
+// Highlights: wrap each comment's span in <mark class="cm-hl"> across text nodes.
+function unpaint(card) {
+  for (const m of card.querySelectorAll("mark.cm-hl")) {
+    const p = m.parentNode;
+    while (m.firstChild) p.insertBefore(m.firstChild, m);
+    p.removeChild(m);
+    p.normalize();
+  }
+}
+function wrapRange(block, start, end, cid, title) {
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n);
+  let pos = 0;
+  for (const n of nodes) {
+    const len = n.data.length, a = pos, b = pos + len;
+    pos = b;
+    if (b <= start || a >= end) continue;
+    let node = n;
+    const from = Math.max(0, start - a), to = Math.min(len, end - a);
+    if (to < node.data.length) node.splitText(to);
+    if (from > 0) node = node.splitText(from);
+    const mark = document.createElement("mark");
+    mark.className = "cm-hl";
+    mark.dataset.cid = cid;
+    mark.title = title;
+    node.parentNode.insertBefore(mark, node);
+    mark.append(node);
+  }
+}
+function paintComments() {
+  const card = $(".lcard");
+  if (!card || card.dataset.id !== currentId()) return;
+  unpaint(card);
+  const found = new Set();
+  if (L.showComments) for (const c of currentComments()) {
+    const block = [...card.querySelectorAll("[data-anchor]")].find((b) => b.dataset.anchor === c.anchor);
+    if (!block) continue;
+    const at = CL().locateQuote(block.textContent, c.quote, c.start);
+    if (!at) continue;
+    wrapRange(block, at.start, at.end, c.comment_id, `${c.text || ""}${c.tags?.length ? ` [${c.tags.join(", ")}]` : ""}`);
+    found.add(c.comment_id);
+  }
+  for (const li of card.querySelectorAll(".cm-item")) li.classList.toggle("lost", !found.has(li.dataset.cid) && L.showComments);
+}
+function refreshComments() {
+  const old = $(".lcard .comments");
+  const entry = L.cache.get(currentId());
+  if (old && entry) old.replaceWith(commentsEl(entry));
+  paintComments();
+}
+
+function commentsEl(entry) {
+  const list = entry.comments || [];
+  const me = App.config.reviewer;
+  const items = list.map((c) => el("li", { class: "cm-item", "data-cid": c.comment_id },
+    el("div", { class: "cm-line" }, anchorChip(c.anchor), el("q", { class: "cm-q", title: c.quote, onclick: () => focusMark(c.comment_id) }, c.quote.length > 120 ? `${c.quote.slice(0, 117)}…` : c.quote)),
+    c.text ? el("div", { class: "cm-body" }, c.text) : null,
+    el("div", { class: "cm-foot" },
+      (c.tags || []).map((t) => el("span", { class: "cm-tag on static" }, (L.task.comment_tags || []).find((x) => x.id === t)?.label || t)),
+      c.reviewer && c.reviewer !== me ? el("span", { class: "muted" }, c.reviewer) : null,
+      el("span", { class: "ab-spacer" }),
+      c.reviewer === me || !c.reviewer ? [
+        el("button", { type: "button", class: "btn ghost sm", tabindex: "-1", onclick: () => openCommentBox(c) }, "Edit"),
+        el("button", { type: "button", class: "btn ghost sm", tabindex: "-1", onclick: () => writeComment({ action: "delete", comment_id: c.comment_id }, { kind: "comment", action: "delete", comment_id: c.comment_id, item_id: c.item_id }) }, "Delete")] : null)));
+  const toggle = el("button", { type: "button", class: "btn ghost sm", tabindex: "-1", onclick: () => { L.showComments = !L.showComments; store.set("showComments", L.showComments); refreshComments(); } }, L.showComments ? "Hide highlights" : "Show highlights");
+  return el("section", { class: "comments", "aria-label": "Line comments" },
+    el("div", { class: "cm-head" }, el("h4", {}, list.length ? `Comments · ${list.length}` : "Comments"),
+      el("span", { class: "hint" }, isPhone() ? " — select text, then tap Comment" : " — select text on the card, then press c (or click Comment)"),
+      el("span", { class: "ab-spacer" }), list.length ? toggle : null),
+    list.length ? el("ul", { class: "cm-list" }, items) : null);
+}
+function focusMark(cid) {
+  const m = document.querySelector(`mark.cm-hl[data-cid="${CSS.escape(cid)}"]`);
+  if (!m) return;
+  m.scrollIntoView({ block: "center" });
+  m.classList.add("flash");
+  setTimeout(() => m.classList.remove("flash"), 1200);
+}
+// A click on a highlight shows its entry in the list.
+document.addEventListener("click", (e) => {
+  const m = e.target.closest && e.target.closest("mark.cm-hl");
+  if (!m || !window.getSelection()?.isCollapsed) return;
+  const li = document.querySelector(`.cm-item[data-cid="${CSS.escape(m.dataset.cid)}"]`);
+  if (li) { li.scrollIntoView({ block: "nearest" }); li.classList.add("flash"); setTimeout(() => li.classList.remove("flash"), 1200); }
+});
 
 /* ---------- actions ---------- */
 function flashChoice(labelId) {
@@ -968,6 +1219,14 @@ function step(d) {
 }
 
 async function undo() {
+  const last = L.undo[L.undo.length - 1];
+  if (last && typeof last === "object" && last.kind === "comment") {
+    L.undo.pop();
+    const inv = CL().inverseOf(last);
+    if (inv && await writeComment(inv, null, { quiet: true })) flash(`↩ Undone: comment ${last.action === "create" ? "removed" : last.action === "delete" ? "restored" : "edit reverted"}`);
+    else if (!inv) toast("Nothing to undo");
+    return;
+  }
   let id = L.undo.pop();
   if (!id) { const cur = currentId(); if (cur && labelOf(cur) != null) id = cur; }
   if (!id) { toast("Nothing to undo"); return; }
@@ -976,7 +1235,7 @@ async function undo() {
     L.cache.set(id, { item: res.item, state: res.state && res.state.label != null ? res.state : { ...res.state, label: null } });
     const row = L.index.get(id);
     if (row) row.label = null;
-    if (L.tab !== "label") { L.tab = "label"; gotoItem(id); location.hash = `#/task/${enc(L.taskId)}`; render(); }
+    if (L.tab !== "label") { L.tab = "label"; gotoItem(id); location.hash = `${App.taskHref(L.taskId)}`; render(); }
     else { gotoItem(id); renderRoundBar(); renderCardArea({ scroll: true }); }
     refreshTaskRow();
     flash(`↩ Undone: ${L.index.get(id)?.title || id}`);
@@ -1054,7 +1313,7 @@ function roundDone() {
     usefulLine(),
     el("div", { class: "rd-actions" },
       allDone ? null : el("button", { class: "btn primary", type: "button", id: "next-round", onclick: startNextRound }, `Start round ${L.rounds[nextIdx].n} →`, enter("↵")),
-      el("a", { class: "btn", href: `#/task/${enc(L.taskId)}/results` }, "See results"),
+      el("a", { class: "btn", href: `${App.taskHref(L.taskId)}/results` }, "See results"),
       el("button", { class: "btn ghost", type: "button", onclick: () => { L.pos = 0; renderRoundBar(); renderCardArea({ scroll: true }); } }, `Review this ${unitName().toLowerCase()}`)));
 }
 
@@ -1065,7 +1324,7 @@ function waveDone() {
   const nextIdx = L.rounds.findIndex((rd) => rd.ids.some((id) => labelOf(id) == null));
   const box = el("div", { class: "round-done" });
   const review = r ? el("button", { class: "btn ghost", type: "button", onclick: () => { L.pos = 0; renderRoundBar(); renderCardArea({ scroll: true }); } }, "Review this wave") : null;
-  const results = el("a", { class: "btn", href: `#/task/${enc(L.taskId)}/results` }, "See results");
+  const results = el("a", { class: "btn", href: `${App.taskHref(L.taskId)}/results` }, "See results");
   if (nextIdx !== -1) {
     box.append(el("div", { class: "rd-mark", "aria-hidden": "true" }, "✓"),
       el("h3", {}, r ? `Wave ${r.n} done` : "Ready"),
@@ -1079,7 +1338,7 @@ function waveDone() {
       el("h3", {}, `All ${w.count} waves are done`),
       el("p", {}, `You labeled ${labeledCount()} of ${L.index.size}. The stand-in's labels fill the rest; Results shows how far to trust them (checked on the last wave, which it predicted before you saw it).`),
       usefulLine(),
-      el("div", { class: "rd-actions" }, el("a", { class: "btn primary", href: `#/task/${enc(L.taskId)}/results` }, "See final labels"), review));
+      el("div", { class: "rd-actions" }, el("a", { class: "btn primary", href: `${App.taskHref(L.taskId)}/results` }, "See final labels"), review));
     return box;
   }
   // The agent's turn.
@@ -1139,10 +1398,11 @@ function itemsRows() {
   else if (f === "labeled") rows = rows.filter((x) => x.label != null);
   else if (f === "unsure") rows = rows.filter((x) => labelDef(x.label)?.abstain);
   else if (f === "noted") rows = rows.filter((x) => x.note);
+  else if (f === "commented") rows = rows.filter((x) => x.comments);
   return rows;
 }
 function renderItems(body) {
-  const filters = [["all", "All"], ["unlabeled", "Unlabeled"], ["labeled", "Labeled"], ["unsure", "Unsure"], ["noted", "With note"]];
+  const filters = [["all", "All"], ["unlabeled", "Unlabeled"], ["labeled", "Labeled"], ["unsure", "Unsure"], ["noted", "With note"], ["commented", "With comments"]];
   const roundSel = el("select", { class: "kind-select", "aria-label": unitName() }, el("option", { value: "all" }, waves() ? "All waves" : "All rounds"),
     L.rounds.map((r) => el("option", { value: String(r.n), selected: L.itemsRound === String(r.n) }, `${unitName()} ${r.n}`)));
   roundSel.addEventListener("change", () => { L.itemsRound = roundSel.value; L.itemsSel = 0; render(); });
@@ -1154,7 +1414,7 @@ function renderItems(body) {
     el("span", { class: "muted" }, `${rows.length} item${rows.length === 1 ? "" : "s"}`)));
   if (!rows.length) { body.append(el("div", { class: "empty" }, "Nothing under this filter.")); return; }
   const table = el("table", { class: "items-table" },
-    el("thead", {}, el("tr", {}, el("th", {}, unitName()), el("th", {}, "Item"), el("th", {}, "When"), el("th", {}, "Your label"), el("th", {}, "Note"))),
+    el("thead", {}, el("tr", {}, el("th", {}, unitName()), el("th", {}, "Item"), el("th", {}, "When"), el("th", {}, "Your label"), el("th", {}, "Note"), el("th", { class: "num" }, "Comments"))),
     el("tbody", {}, rows.map((x, i) => {
       const l = labelDef(x.label);
       const tr = el("tr", { class: i === L.itemsSel ? "sel" : "", "data-id": x.id, tabindex: "-1" },
@@ -1162,8 +1422,9 @@ function renderItems(body) {
         el("td", {}, el("div", { class: "it-title" }, x.title || x.id), x.title ? el("div", { class: "it-id" }, x.id) : null),
         el("td", { class: "muted" }, x.meta?.started_at ? fmtDate(x.meta.started_at) : ""),
         el("td", {}, l ? el("span", { class: `pill tone-${toneOf(l)}` }, l.label) : el("span", { class: "muted" }, "—")),
-        el("td", { class: "muted note-cell" }, x.note || ""));
-      tr.addEventListener("click", () => { location.hash = `#/task/${enc(L.taskId)}/item/${enc(x.id)}`; });
+        el("td", { class: "muted note-cell" }, x.note || ""),
+        el("td", { class: "num muted" }, x.comments ? String(x.comments) : ""));
+      tr.addEventListener("click", () => { location.hash = `${App.taskHref(L.taskId)}/item/${enc(x.id)}`; });
       return tr;
     })));
   body.append(el("div", { class: "table-wrap" }, table));
@@ -1197,6 +1458,7 @@ async function renderResults(body) {
   fillBox.querySelector("input").addEventListener("change", (e) => { L.fill = e.target.checked; store.set("fill", L.fill); render(); });
   if (standins.length && !res.waves) out.push(fillBox);
 
+  if (res.comments && res.comments.total) out.push(...commentsResults(res.comments));
   const models = res.models.filter((m) => m.kind === "model");
   if (models.length) {
     out.push(el("h3", { class: "sec" }, "Each model against you"));
@@ -1221,11 +1483,37 @@ async function renderResults(body) {
     for (const m of dis) {
       out.push(el("details", { class: "dis" }, el("summary", {}, `${m.id} · ${m.disagreements.length}`),
         el("ul", {}, m.disagreements.slice(0, 100).map((d) => el("li", {},
-          el("a", { href: `#/task/${enc(L.taskId)}/item/${enc(d.item_id)}` }, d.title || d.item_id),
+          el("a", { href: `${App.taskHref(L.taskId)}/item/${enc(d.item_id)}` }, d.title || d.item_id),
           el("span", { class: "muted" }, ` — you: ${lab(d.truth)}, ${m.id}: ${lab(d.verdict)}`))))));
     }
   }
   body.replaceChildren(...out);
+}
+
+// Line comments, grouped by the model behind each letter (unblinded only on
+// cards you labeled) and by tag.
+function commentsResults(cs) {
+  const tags = cs.tags;
+  const tagLabel = (t) => (L.task.comment_tags || []).find((x) => x.id === t)?.label || t;
+  const kindName = { model: "", letter: "variant ", anchor: "block ", blind: "" };
+  const out = [el("h3", { class: "sec" }, `Line comments · ${cs.total} on ${cs.items} card${cs.items === 1 ? "" : "s"}`)];
+  out.push(el("p", { class: "hint-line" }, "Comments on a variant's letter are counted against the model behind it. Letters on cards you have not labeled stay blind."));
+  out.push(el("div", { class: "table-wrap" }, el("table", { class: "agree-table cm-table" },
+    el("thead", {}, el("tr", {}, el("th", {}, ""), el("th", { class: "num" }, "Comments"), el("th", { class: "num" }, "Cards"), tags.map((t) => el("th", { class: "num" }, tagLabel(t))), el("th", { class: "num" }, "Untagged"))),
+    el("tbody", {}, cs.groups.map((g) => el("tr", {},
+      el("th", { scope: "row" }, `${kindName[g.kind]}${g.key}`),
+      el("td", { class: "num big-num" }, String(g.total)), el("td", { class: "num" }, String(g.items)),
+      tags.map((t) => el("td", { class: "num" }, g.tags[t] ? String(g.tags[t]) : "")),
+      el("td", { class: "num" }, g.untagged ? String(g.untagged) : "")))))));
+  for (const g of cs.groups) {
+    out.push(el("details", { class: "dis" }, el("summary", {}, `${kindName[g.kind]}${g.key} · ${g.total}`),
+      el("ul", { class: "cm-results" }, g.comments.map((c) => el("li", {},
+        el("a", { href: `${App.taskHref(L.taskId)}/item/${enc(c.item_id)}` }, c.title || c.item_id),
+        " ", anchorChip(c.anchor), " ", el("q", { class: "cm-q" }, c.quote.length > 140 ? `${c.quote.slice(0, 137)}…` : c.quote),
+        c.text ? el("span", {}, ` — ${c.text}`) : null,
+        (c.tags || []).map((t) => el("span", { class: "cm-tag on static" }, tagLabel(t))))))));
+  }
+  return out;
 }
 
 const fmtRate = (r) => (r && r.compared ? `${pct(r.rate)}` : "—");
@@ -1278,7 +1566,7 @@ function finalLabelsSection(w, lab) {
     if (e.misses.length) {
       out.push(el("details", { class: "dis" }, el("summary", {}, `Stand-in misses · ${e.misses.length}`),
         el("ul", {}, e.misses.map((x) => el("li", {},
-          el("a", { href: `#/task/${enc(L.taskId)}/item/${enc(x.item_id)}` }, x.title || x.item_id),
+          el("a", { href: `${App.taskHref(L.taskId)}/item/${enc(x.item_id)}` }, x.title || x.item_id),
           el("span", { class: "muted" }, ` — wave ${x.wave}: stand-in ${lab(x.predicted)}${x.confidence != null ? ` (${x.confidence})` : ""}, you ${lab(x.human)}`))))));
     }
   }
@@ -1381,6 +1669,7 @@ App.help.label = [
   ["j / k  or  → / ←", "next / previous card"],
   ["u", "undo your last label — from any card, the done screen, Items or Results"],
   ["n", "type a note (Enter saves it; it also rides along with the next label)"],
+  ["c", "comment on the selected text (select it first; Enter saves, u undoes)"],
   ["i", "show or hide the instructions"],
   ["Space", "play / pause the item's audio"],
   ["Enter", "start the next round or wave (on the done screen)"],
@@ -1390,7 +1679,7 @@ App.keyHandlers.label = (e) => {
   if (L.task?.kind === "speakers") return Speakers.key(e);
   const k = e.key;
   const tabKey = { L: "", I: "/items", R: "/results" }[k];
-  if (tabKey != null) { location.hash = `#/task/${enc(L.taskId)}${tabKey}`; return true; }
+  if (tabKey != null) { location.hash = `${App.taskHref(L.taskId)}${tabKey}`; return true; }
   const keys = taskKeys();
   const lk = k.toLowerCase();
   if (k === "u" && !keys.has("u")) { undo(); return true; }
@@ -1413,6 +1702,8 @@ App.keyHandlers.label = (e) => {
     if (k === "k" || k === "ArrowLeft") { step(-1); return true; }
     return false;
   }
+  if (k === "Escape" && $("#cm-pop")) { closeCommentBox(); return true; }
+  if (cmKey() && lk === cmKey() && !e.shiftKey) { openCommentBox(); return true; }
   if (k === "Enter" && L.suggestions?.[currentId()]) { pick(L.suggestions[currentId()].label,"suggested-accepted"); return true; }
   const l = L.task.labels.find((x) => x.key === lk);
   if (l) { pick(l.id); return true; }

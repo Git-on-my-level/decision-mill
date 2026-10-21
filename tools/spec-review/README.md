@@ -31,13 +31,15 @@ the bundled `examples/specs/` and `examples/decision-register/`) and the bundled
 ```sh
 node server.js --labels ~/.local/share/labels --port 4610          # label mode only
 SPECS_DIR=/path/a/specs,/path/b/specs PORT=4601 node server.js     # two spec sets
+node server.js --hub ~/.config/decision-mill/hub.yaml              # every root in one hub file
 ```
 
 ### Configuration (all optional)
 
 | Variable | Flag | Default | Meaning |
 | -------- | ---- | ------- | ------- |
-| `PORT` | `--port` | `4599` | Bind port. Pick a different one per program to run two UIs at once. |
+| `DECISION_MILL_HUB` | `--hub` | `~/.config/decision-mill/hub.yaml` if it exists and no roots are given | Hub file: label roots, spec sets (each with an optional `workspace`), workspace titles, port, reviewer. See the repository README. Empty turns the default off. |
+| `PORT` | `--port` | `4599` | Bind port. Prefer one hub server to one port per program. |
 | `HOST` | `--host` | `127.0.0.1` | Bind address. To reach it from another machine, prefer `tailscale serve --bg --https=<port> http://127.0.0.1:<port>`. |
 | `SPECS_DIR` | `--specs` | `<repo>/specs`, else `<repo>/examples/specs` | Spec directories (comma-separated, or repeat the flag). Each is a spec set on the home screen. |
 | `LABELS_ROOT` | `--labels` | `<repo>/examples/labels` if nothing else is configured | Label-task roots (comma-separated, or repeat the flag). |
@@ -180,7 +182,8 @@ node labels.js waves <task>                   # state, per-wave progress, stand-
 node labels.js infer-prompt <task> --out brief.md
 node labels.js import-standin <task> standin.jsonl [--model ID] [--dry-run]
 node labels.js next-wave <task> [--dry-run]   # select + freeze waves/wave-N.json
-node labels.js wait <task> --until wave-ready|round-done|labeled:N|done|change [--url URL] [--timeout 3h]
+node labels.js wait <task> --until wave-ready|round-done|labeled:N|done|change|commented|commented:N [--url URL] [--timeout 3h]
+node labels.js comments <task> [--json]       # line comments by model (letters mapped) and tag
 ```
 
 Reads the files directly; prints the same numbers as Results (`lib/results.js`).
@@ -266,6 +269,9 @@ at worst tear the final line (which readers skip).
 | `lib/parser.js` | spec parsing and surgical updates |
 | `lib/task.js`, `lib/labelstore.js`, `lib/rounds.js`, `lib/results.js` | label format, store, sampler, results math |
 | `lib/label-api.js` | label-mode HTTP routes |
+| `lib/comments.js`, `public/comment-logic.js` | line comments: the append-only store and grouping; block splitting and quote finding in the browser |
+| `lib/lifecycle.js` | workspaces, status, archive/restore, `decision`/`enough_when`, staleness, the inbox estimate |
+| `lib/letters.js`, `letters.js` | balanced blind variant letters (seeded Latin square) and the imbalance check |
 | `public/common.js`, `shell.js`, `spec.js`, `label.js` | the UI: helpers, shell/router, the two modes |
 | `lib/specset.js` | `decision-mill.yaml`: decisions, instructions, locator roots |
 | `lib/wait.js` | long-poll loop and the client wait loop |

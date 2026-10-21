@@ -57,8 +57,27 @@ Rules that matter (each came from a real labeling session):
    items*; remove the note once items land — `validate.js` warns until you do), fetch in a headless session, copy results with `harvest.js`, and build
    items from disk. Never route that content through your own replies. See
    `LABELS.md#items-an-agent-must-fetch`.
-7. Validate before handing it over:
-   `node tools/spec-review/validate.js --labels <root>` (or with `LABELS_ROOT`).
+7. **Say what it is for.** Set `decision:` (the question the labels answer),
+   `enough_when:` (`{labels: 40}`, `{ci_half_width: 0.1}`, …) and
+   `minutes_per_round:`; set `workspace:` when the server holds more than one
+   program. The UI tells the human when they can stop. Mark finished work
+   `status: done`, or archive it (the Archive button moves it into `_archive/`).
+8. **Variants under letters (A/B/C) are balanced, never shuffled per card.** Assign
+   letters with `node tools/spec-review/letters.js --variants a,b,c --items items.jsonl
+   --seed <task-id>` (a seeded Latin square), store the map in `hidden.letters` and
+   `hidden.<variant>_letter`, and render `## A`, `## B`, … in letter order. One
+   shuffled round put the same variant under A on 3 of 4 cards.
+9. **Validate the source items, then read every card yourself before handing a
+   round to the human.** `node tools/spec-review/validate.js --labels <root>` checks
+   structure and letter balance, not whether a card makes sense: open each card in
+   the UI (or read each item's rendered content) and look for empty variants, wrong
+   items, leaked model names, truncation, broken markdown.
+10. **Never tune a variant on the items being labeled.** Prompt or rule changes are
+    developed on other items; a variant fitted to the round it is judged on wins by
+    construction. If you must iterate, build a fresh round of unseen items.
+11. **Ask for line comments in the round instructions** — e.g. "select the words
+    that made the call and press `c`; tag wrong names, missing points,
+    hallucinations". A winner label alone carries little signal; comments say why.
 
 ## Launch
 
@@ -80,7 +99,13 @@ Start on a non-default port, record the PID, and stop it by PID when done.
 
 Tell the human: the URL, the task name, round or wave size and rough time ("20
 cards, ~6 min"), and that keys are on the buttons (`1/2/3`, `s` skip, `u` undo,
-`n` note, `i` instructions, `?` help).
+`n` note, `c` comment on selected text, `i` instructions, `?` help).
+
+**One server for everything.** If a decision-mill server already runs (check the
+port, `lsof -iTCP:<port> -sTCP:LISTEN`), add your labels root or spec set to its hub
+file (`~/.config/decision-mill/hub.yaml`, README "One server for everything") instead
+of starting a second server on another port; new tasks under an existing labels root
+appear without a restart. Link the human to `#/w/<workspace>/task/<id>`.
 
 ## Spec mode with your own verdicts
 
@@ -134,7 +159,7 @@ terminal state — 0 satisfied, 2 timeout, 1 server error/unreachable/impossible
 ```sh
 # spec mode: all-decided | no-open | decided:N | change   (--spec SLUG to scope it)
 node tools/spec-review/wait.js --url http://127.0.0.1:4601 --until all-decided --timeout 3h
-# label mode: wave-ready | round-done | labeled:N | done | change
+# label mode: wave-ready | round-done | labeled:N | done | change | commented | commented:N
 node tools/spec-review/labels.js wait <task> --url http://127.0.0.1:4610 --until wave-ready --timeout 3h
 ```
 
@@ -190,6 +215,7 @@ human rows yourself, and never edit or delete label files — they are append-on
 ```sh
 node tools/spec-review/labels.js stats <task-dir|id> [--reviewer david] [--json]
 node tools/spec-review/labels.js export <task-dir|id> --source human [--format csv]
+node tools/spec-review/labels.js comments <task-dir|id> [--json]   # line comments by model and tag
 curl -s localhost:4610/api/task/<id>/results          # same payload as the Results tab
 ```
 
@@ -198,6 +224,13 @@ Wilson interval, confusion counts, per-stratum agreement, the threshold sweep, a
 plain usefulness read. Report agreement **with n and the interval**, call samples
 under ~25 directional, and look at the disagreement list before recommending a
 threshold — the disagreements are where the decision is.
+
+**Read raw outputs before relaying any metrics table.** Before you report agreement
+or a winner, open a sample of the actual items and the human's labels, notes and
+comments (`labels.js comments <task>` groups comments by the model behind each
+letter and by tag). A table can hide an empty variant, a mislabeled column or a
+letter mapping that is off by one; the raw outputs cannot. Quote the comments'
+counts by model and tag next to the agreement numbers.
 
 ## Privacy
 

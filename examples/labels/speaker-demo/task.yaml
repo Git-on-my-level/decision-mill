@@ -4,3 +4,7 @@ question: Who is speaking?
 instructions: Fictional transcript with tones, not real voices. Use Space to hear a representative, then a number to label the group. Add Alex; review the transcript and try a blind audit.
 suggest_threshold: 0.45
 audit: {per_conversation: 3}
+workspace: demo
+decision: Is the diarizer good enough to name speakers automatically?
+enough_when: {labels: 3}
+minutes_per_round: 2

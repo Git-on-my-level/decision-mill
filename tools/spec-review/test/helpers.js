@@ -32,7 +32,7 @@ export function freePort() {
 
 export async function startServer(env) {
   const port = await freePort();
-  const child = spawn(process.execPath, ["server.js"], { cwd: TOOL, env: { ...process.env, REVIEWER: "", PORT: String(port), ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, ["server.js"], { cwd: TOOL, env: { ...process.env, REVIEWER: "", DECISION_MILL_HUB: "", PORT: String(port), ...env }, stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
   child.stdout.on("data", (d) => { out += d; });
   child.stderr.on("data", (d) => { out += d; });

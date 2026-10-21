@@ -13,7 +13,11 @@
 //   POST /api/task/:id/labels               agent batch: {reviewer, labels:[...]}
 //                                           source is always model-standin
 //   GET  /api/task/:id/wait?until=…          long-poll for agents (wave-ready,
-//                                           round-done, labeled>=N, done, change)
+//                                           round-done, labeled>=N, done, change,
+//                                           commented, commented>=N)
+//   GET  /api/task/:id/comments[?item=]     line comments (live rows, every reviewer)
+//   POST /api/task/:id/comment              {action: create|edit|delete|restore, …}
+//   POST /api/task/:id/archive | /restore   move the task into <root>/_archive/ or back
 
 import { speakerStates, suggestions, segmentLabel, progress, auditSample, speakerResults, exportTruth } from "./speakers.js";
 import fs from "node:fs";
@@ -26,6 +30,8 @@ import { buildRounds, currentRound } from "./rounds.js";
 import { computeResults, positiveLabel, modelVerdict } from "./results.js";
 import { readWaves, nextWave, waveStatus, waveReviewer, humanStatesOf } from "./waves.js";
 import { parseUntil, requestTimeout, longPoll, etagOf } from "./wait.js";
+import { readTaskComments, liveComments, publicComment, buildCommentRow, appendComment, commentSummary, commentsDir } from "./comments.js";
+import { lastActivity, createdAt, isStale, evaluateEnough, estimateMinutes, archiveTask, restoreTask, rootWorkspace } from "./lifecycle.js";
 
 // Task cache keyed by the mtimes of task.yaml and items.jsonl, so editing either
 // file is picked up on the next request without a restart.
@@ -80,24 +86,52 @@ function ownStates(labels, reviewer) {
   return r ? r.states : new Map();
 }
 
-export function taskSummaries(roots, reviewer) {
-  return discoverTasks(roots).map((entry) => {
-    const t = getTask(entry);
-    const labels = readTaskLabels(entry.dir);
-    const mine = humanStates(labels, reviewer);
-    const labeled = t.items.filter((it) => mine.has(it.id)).length;
-    const standin = Object.values(labels.reviewers).filter((r) => [...r.states.values()].some((s) => s.label != null && s.source === "model-standin")).length;
-    const { rounds, waves } = roundsFor(entry, t);
-    const cur = currentRound(rounds, mine);
-    const ws = waves ? waveStatus({ task: t.task, items: t.items, waves, labels, reviewer }) : null;
-    return {
-      id: entry.id, title: t.task.title, question: t.task.question, blind: t.task.blind,
-      items: t.items.length, empty: !t.items.length, pending: Boolean(t.task.pending) && !t.items.length, labeled, standinReviewers: standin,
-      rounds: { total: ws ? ws.count : rounds.length, done: rounds.filter((r) => r.ids.every((id) => mine.has(id))).length, current: cur < rounds.length ? cur + 1 : null, size: ws ? ws.size : t.task.round_size },
-      waves: ws ? { state: ws.state, frozen: ws.frozen, count: ws.count, current: ws.current } : null,
-      errors: t.errors.length, warnings: t.warnings.length,
-    };
-  });
+// Where a task stands for this reviewer: progress, lifecycle, and what still waits
+// on them (the home inbox). `ctx.rootWorkspaces` maps a labels root to the
+// workspace a hub assigns it.
+export function taskSummary(entry, reviewer, ctx = {}) {
+  const t = getTask(entry);
+  const labels = readTaskLabels(entry.dir);
+  const mine = humanStates(labels, reviewer);
+  const labeled = t.items.filter((it) => mine.has(it.id)).length;
+  const standin = Object.values(labels.reviewers).filter((r) => [...r.states.values()].some((s) => s.label != null && s.source === "model-standin")).length;
+  const { rounds, waves } = roundsFor(entry, t);
+  const cur = currentRound(rounds, mine);
+  const ws = waves ? waveStatus({ task: t.task, items: t.items, waves, labels, reviewer }) : null;
+  const roundsDone = rounds.filter((r) => r.ids.every((id) => mine.has(id))).length;
+  const comments = liveComments(readTaskComments(entry.dir)).length;
+  // Cards waiting on the human now: the rest of the current round or wave. A waves
+  // task between waves waits on the agent instead.
+  const waitingOn = !t.items.length ? "items" : ws && ws.state === "inferring" ? "agent" : cur < rounds.length ? "human" : null;
+  const remaining = waitingOn === "human" ? rounds[cur].ids.filter((id) => !mine.has(id)).length : 0;
+  const unlabeled = t.items.length - labeled;
+  let enough = null;
+  if (t.task.enough_when) {
+    let models = [];
+    if (t.task.enough_when.ci_half_width) {
+      const res = computeResults({ task: t.task, items: t.items, labels, reviewer: safeReviewer(reviewer), waves });
+      models = res.models.filter((m) => m.kind === "model").map((m) => ({ id: m.id, compared: m.compared, ci: m.ci }));
+    }
+    enough = evaluateEnough(t.task.enough_when, { labeled, roundsDone, comments, models });
+  }
+  const last = lastActivity(entry.dir);
+  const created = createdAt(t.task, entry.dir);
+  const status = entry.archived ? "archived" : t.task.status;
+  return {
+    id: entry.id, title: t.task.title, question: t.task.question, blind: t.task.blind,
+    items: t.items.length, empty: !t.items.length, pending: Boolean(t.task.pending) && !t.items.length, labeled, standinReviewers: standin,
+    rounds: { total: ws ? ws.count : rounds.length, done: roundsDone, current: cur < rounds.length ? cur + 1 : null, size: ws ? ws.size : t.task.round_size },
+    waves: ws ? { state: ws.state, frozen: ws.frozen, count: ws.count, current: ws.current } : null,
+    errors: t.errors.length, warnings: t.warnings.length,
+    workspace: t.task.workspace || rootWorkspace(entry.root, ctx.rootWorkspaces), status, archived: Boolean(entry.archived), canArchive: !entry.archived && !entry.isRoot,
+    decision: t.task.decision, enough, minutes_per_round: t.task.minutes_per_round,
+    waitingOn, remaining, unlabeled, minutes: estimateMinutes(t.task, remaining), minutesAll: estimateMinutes(t.task, unlabeled),
+    comments, lastActivity: last ? new Date(last).toISOString() : null, created: created ? new Date(created).toISOString() : null,
+    stale: isStale(status, last),
+  };
+}
+export function taskSummaries(roots, reviewer, ctx = {}) {
+  return discoverTasks(roots).map((entry) => taskSummary(entry, reviewer, ctx));
 }
 
 // Where a task stands for a waiting agent: the human's progress through rounds or
@@ -114,14 +148,17 @@ export function labelWaitState(entry, want) {
   const cur = currentRound(rounds, human);
   // Label rows only ever append, so file sizes are a faithful change signal.
   const files = [];
-  for (const sub of ["labels", "waves"]) {
+  for (const sub of ["labels", "waves", "comments"]) {
     const d = path.join(entry.dir, sub);
     if (!fs.existsSync(d)) continue;
     for (const f of fs.readdirSync(d).sort()) { try { files.push(`${sub}/${f}:${fs.statSync(path.join(d, f)).size}`); } catch { /* raced */ } }
   }
   const labeled = t.items.filter((it) => human.has(it.id)).length;
+  const cdir = commentsDir(entry.dir);
+  const cfiles = fs.existsSync(cdir) ? fs.readdirSync(cdir).sort().map((f) => { try { return `${f}:${fs.statSync(path.join(cdir, f)).size}`; } catch { return f; } }) : [];
   return {
     task: entry.id, kind: t.task.kind || "label", reviewer: who, items: t.items.length, labeled,
+    comments: liveComments(readTaskComments(entry.dir)).length, commentsEtag: etagOf(cfiles.join("|")),
     unit: ws ? "wave" : "round",
     rounds: rounds.map((r) => ({ n: r.n, size: r.ids.length, labeled: r.ids.filter((id) => human.has(id)).length })),
     current: cur < rounds.length ? rounds[cur].n : null,
@@ -140,6 +177,9 @@ export function labelCondition(st, cond, base) {
     return { done: Boolean(st.items) && st.labeled >= cond.n };
   }
   if (cond.kind === "change") { if (!base.since) base.since = st.etag; return { done: st.etag !== base.since }; }
+  // commented: any new comment row since the wait began; commented>=N: N live comments.
+  if (cond.kind === "commented") { if (!base.since) base.since = st.commentsEtag; return { done: st.commentsEtag !== base.since }; }
+  if (cond.kind === "commented>=") return { done: st.comments >= cond.n };
   if (cond.kind === "wave-ready") {
     if (!st.waves) return { error: "this task uses rounds, not waves — wait with round-done" };
     return { done: st.waves.state === "inferring" || st.waves.state === "done" };
@@ -230,11 +270,11 @@ function serveMedia(req, res, t, src, json) {
 }
 
 // Returns false when the path is not a label route (server.js falls through).
-export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, json, HttpError }) {
+export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, json, HttpError, rootWorkspaces }) {
   const p = u.pathname;
-  if (p === "/api/tasks" && req.method === "GET") return json(res, 200, { reviewer, tasks: taskSummaries(roots, reviewer) });
+  if (p === "/api/tasks" && req.method === "GET") return json(res, 200, { reviewer, tasks: taskSummaries(roots, reviewer, { rootWorkspaces }) });
 
-  const m = p.match(/^\/api\/task\/([^/]+)(?:\/(item|labels|results|media|label|undo|speakers|suggestions|wait)(?:\/(.+))?)?$/);
+  const m = p.match(/^\/api\/task\/([^/]+)(?:\/(item|labels|results|media|label|undo|speakers|suggestions|wait|comments|comment|archive|restore)(?:\/(.+))?)?$/);
   if (!m) return false;
   const [, taskId, sub, rest] = m;
   const entry = discoverTasks(roots).find((e) => e.id === decodeURIComponent(taskId));
@@ -255,6 +295,30 @@ export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, j
       if (r.error) return { error: r.error, code: 409 };
       return { done: r.done, body: { until, ...st, since: base.since, baseline: { round: base.round } } };
     } });
+  }
+  if ((sub === "archive" || sub === "restore") && req.method === "POST") {
+    const r = sub === "archive" ? archiveTask(entry) : restoreTask(entry);
+    if (r.error) return json(res, 409, { error: r.error });
+    cache.delete(entry.dir);
+    const moved = discoverTasks(roots).find((e) => path.resolve(e.dir) === path.resolve(r.dir));
+    return json(res, 200, { ok: true, dir: r.dir, task: moved ? taskSummary(moved, reviewer, { rootWorkspaces }) : null });
+  }
+  if (sub === "comments" && req.method === "GET") {
+    const want = u.searchParams.get("item");
+    const all = liveComments(readTaskComments(entry.dir), want || null).map(publicComment);
+    return json(res, 200, { task: entry.id, tags: t.task.comment_tags, comments: all });
+  }
+  if (sub === "comment" && req.method === "POST") {
+    const body = await readBody(req);
+    if (body.reviewer && safeReviewer(body.reviewer) !== safeReviewer(reviewer)) return json(res, 400, { error: "comments are attributed to the request's reviewer; omit reviewer" });
+    const own = readTaskComments(entry.dir).reviewers[safeReviewer(reviewer)]?.comments || new Map();
+    const built = buildCommentRow(body, { task: t.task, itemIds: new Set(t.byId.keys()), reviewer, own });
+    if (built.error) return json(res, 400, { error: built.error });
+    await appendComment(entry.dir, reviewer, built.row);
+    const after = readTaskComments(entry.dir);
+    const c = after.reviewers[safeReviewer(reviewer)]?.comments.get(built.row.comment_id);
+    return json(res, 200, { ok: true, row: built.row, comment: c ? { ...publicComment(c), deleted: c.deleted } : null,
+      comments: liveComments(after, built.row.item_id).map(publicComment) });
   }
   if (sub === "suggestions") {
     const states = speakerStates(readTaskLabels(entry.dir), safeReviewer(reviewer));
@@ -284,6 +348,8 @@ export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, j
     const own = ownStates(labels, reviewer);
     const mine = humanStates(labels, reviewer);
     const { rounds, waves, errors: waveErrors } = roundsFor(entry, t);
+    const ccount = new Map();
+    for (const c of liveComments(readTaskComments(entry.dir))) ccount.set(c.item_id, (ccount.get(c.item_id) || 0) + 1);
     const roundOf = new Map();
     for (const r of rounds) for (const id of r.ids) roundOf.set(id, r.n);
     const index = t.items.map((it) => {
@@ -291,10 +357,12 @@ export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, j
       const row = { id: it.id, title: it.title || null, round: roundOf.get(it.id), label: s && s.source !== "model-standin" ? s.label : null, note: s ? s.note : null,
         meta: it.meta ? { started_at: it.meta.started_at, duration_s: it.meta.duration_s, word_count: it.meta.word_count } : null };
       if (!t.task.blind || mine.has(it.id)) row.stratum = it.stratum ?? null;
+      if (ccount.has(it.id)) row.comments = ccount.get(it.id);
       return row;
     });
     const cur = currentRound(rounds, mine);
     return json(res, 200, { task: t.task, errors: [...t.errors, ...waveErrors], warnings: t.warnings, reviewer, index,
+      summary: taskSummary(entry, reviewer, { rootWorkspaces }),
       rounds: rounds.map((r) => ({ n: r.n, ids: r.ids, pinned: r.pinned, strategy: r.strategy })), current: cur,
       waves: waves ? waveStatus({ task: t.task, items: t.items, waves, labels, reviewer }) : null });
   }
@@ -306,7 +374,8 @@ export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, j
     const labels = readTaskLabels(entry.dir);
     const own = ownStates(labels, reviewer).get(id);
     const labeledByMe = humanStates(labels, reviewer).has(id);
-    return json(res, 200, { item: viewItem(t, it, labeledByMe), state: own && own.source !== "model-standin" ? publicState(own) : null });
+    return json(res, 200, { item: viewItem(t, it, labeledByMe), state: own && own.source !== "model-standin" ? publicState(own) : null,
+      comments: liveComments(readTaskComments(entry.dir), id).map(publicComment) });
   }
 
   if (sub === "labels" && req.method === "GET") {
@@ -342,6 +411,10 @@ export async function handleLabelApi(req, res, u, { roots, reviewer, readBody, j
       const out = speakerResults(t,labels,who); exportTruth(t.dir,out); return json(res,200,out);
     }
     const out = computeResults({ task: t.task, items: t.items, labels, reviewer: who, fill: u.searchParams.get("fill") === "1", waves });
+    // Line comments by model (letters unblinded only on cards this reviewer labeled)
+    // and by tag.
+    const humanOf = (id) => who ? humanStates(labels, who).has(id) : Object.keys(labels.reviewers).some((n) => humanStates(labels, n).has(id));
+    out.comments = commentSummary({ task: t.task, items: t.items, comments: liveComments(readTaskComments(entry.dir)), revealed: (id) => !t.task.blind || humanOf(id) });
     const titles = new Map(t.items.map((it) => [it.id, it.title || null]));
     for (const mm of out.models) for (const d of mm.disagreements) d.title = titles.get(d.item_id);
     if (out.waves) for (const x of out.waves.evaluation.misses) x.title = titles.get(x.item_id);

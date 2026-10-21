@@ -1,0 +1,6 @@
+# Optional: names the workspace this labels root's tasks belong to when a
+# task.yaml does not say (LABELS.md#workspaces). Fictional.
+id: demo
+title: Demo workspace
+project: decision-mill examples
+owner: nobody
