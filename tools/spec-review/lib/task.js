@@ -58,7 +58,7 @@ export function normalizeTask(raw, dirName) {
   if (raw && raw.round_size != null && t.round_size !== raw.round_size) warnings.push(`round_size must be a positive integer (using ${t.round_size})`);
   t.stratify = t.stratify === "proportional" ? "proportional" : "balanced";
   if (raw && raw.stratify != null && raw.stratify !== t.stratify) warnings.push(`unknown stratify '${raw.stratify}' (want balanced|proportional)`);
-  t.summary = t.summary === "open" ? "open" : "collapsed";
+  t.summary = t.summary === "open" || t.summary === "collapsed" ? t.summary : "first";
   // Which item.meta keys the card shows, in order. null = the default set
   // (started_at, duration_s, word_count, source); other keys stay hidden.
   if (t.meta_display != null && !Array.isArray(t.meta_display)) { warnings.push("meta_display must be a list of meta keys"); t.meta_display = null; }

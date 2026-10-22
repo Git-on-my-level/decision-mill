@@ -861,9 +861,12 @@ function cardEl(entry) {
   const { item } = entry;
   const t = L.task;
   const { node: media, audio } = mediaEl(item);
-  const summary = item.summary ? el("details", { class: "summary", open: t.summary === "open" },
+  // The summary is markdown. With `summary: first` it leads the card, open, and the
+  // content (transcript, audio) becomes optional context below it, collapsed.
+  const first = t.summary === "first" && !!item.summary;
+  const summary = item.summary ? el("details", { class: `summary${first ? " summary-first" : ""}`, open: t.summary === "open" || first },
     el("summary", {}, "Summary", el("span", { class: "hint" }, " — written by a model from this transcript; it can make a fragment look meaningful")),
-    el("p", { class: "cm-block", "data-anchor": "summary" }, item.summary)) : null;
+    el("div", { class: "prose cm-block", "data-anchor": "summary", html: md(item.summary) })) : null;
   const segs = item.content?.type === "transcript" ? (item.content.segments || []).length : 0;
   const chips = metaChips(item);
   // The source link sits in the title row, the far end of the card from the sticky
@@ -876,10 +879,16 @@ function cardEl(entry) {
     chips.length || item.truncated ? el("div", { class: "lc-meta" },
       chips.map((c) => el("span", { class: "chip" }, c)),
       item.truncated ? el("span", { class: "chip warn" }, "excerpt — the full item was cut") : null) : null,
-    media,
-    el("div", { class: "lc-content" }, contentEl(item.content, audio)),
-    segs ? el("p", { class: "whole" }, item.truncated ? `Showing ${segs} segments of a longer item.` : `The whole item — all ${segs} segment${segs === 1 ? "" : "s"}, not an excerpt.`) : null,
-    summary,
+    ...(first
+      ? [summary, el("details", { class: "lc-context-content" },
+          el("summary", {}, item.content?.type === "transcript" ? `Transcript${segs ? ` · ${segs} segment${segs === 1 ? "" : "s"}` : ""}${media ? " and audio" : ""}` : "Details"),
+          media,
+          el("div", { class: "lc-content" }, contentEl(item.content, audio)),
+          segs ? el("p", { class: "whole" }, item.truncated ? `Showing ${segs} segments of a longer item.` : `The whole item — all ${segs} segment${segs === 1 ? "" : "s"}, not an excerpt.`) : null)]
+      : [media,
+        el("div", { class: "lc-content" }, contentEl(item.content, audio)),
+        segs ? el("p", { class: "whole" }, item.truncated ? `Showing ${segs} segments of a longer item.` : `The whole item — all ${segs} segment${segs === 1 ? "" : "s"}, not an excerpt.`) : null,
+        summary]),
     contextEl(item.context),
     commentsEl(entry),
     revealEl(item, entry.state?.label ?? null));

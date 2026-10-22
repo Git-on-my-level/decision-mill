@@ -43,7 +43,7 @@ fields:                            # optional extra answers per item
 blind: true                        # default true
 round_size: 40                     # default 40
 stratify: balanced                 # balanced (default) | proportional
-summary: collapsed                 # collapsed (default) | open
+summary: first                     # first (default: the summary leads the card; transcript and audio collapsed below) | open | collapsed
 user_label: You                    # how is_user segments are labeled (default "You")
 meta_display: [started_at, duration_s, word_count]   # meta keys shown on the card (default below)
 pending: |                         # optional: shown while items.jsonl is empty or missing
@@ -108,7 +108,7 @@ One JSON object per line:
 | `title` | no | Shown above the content. |
 | `url` | no | Permalink to where the item came from (the pull request, doc, thread or dashboard). Shown as a quiet "Source ↗" link at the right of the title row, opening in a new tab. Only `http:`/`https:` URLs become links; anything else is not shown, and the validator warns. Visible even when blind, and left out of search text and stand-in briefs. |
 | `meta` | no | Shown as chips on the card (only the keys in `meta_display`). **Always visible, even when blind — never put model output here.** |
-| `summary` | no | Collapsed by default, labeled as model-written (a summary can make a fragment look meaningful). |
+| `summary` | no | Markdown, labeled as model-written (a summary can make a fragment look meaningful). By default (task `summary: first`) it leads the card, open, and the content (transcript, audio) is collapsed below it as optional context, so the reviewer judges from the summary and checks the transcript when needed. `summary: open` keeps the content first with the summary open below it; `summary: collapsed` hides it behind a toggle (use that when a summary would bias the judgment, e.g. keep/noise on raw fragments). |
 | `context[]` | no | Neighboring items so the reviewer is not judging a snippet. `relation` is `before` / `after` / `overlapping`, `gap_min` minutes, `title`, `summary`, and optionally `segments` or `content` (expandable). |
 | `media[]` | no | `{"type": "audio" \| "image", "src": "media/…", "label"}`. `src` must be inside the task's `media/` directory. Audio is served with Range support. |
 | `stratum` | no | Sampling bucket (e.g. a model-score band or a disagreement class). Hidden while blind because it usually encodes the answer. Name a stratum `random` for an unbiased sample. |
