@@ -18,6 +18,12 @@ export function pairProblems(c) {
     if (s.duration_s != null && !finite(s.duration_s)) out.push(`pair side ${s.id}: duration_s must be a number`);
     if (s.start != null && !finite(s.start)) out.push(`pair side ${s.id}: start must be a number (seconds on the shared axis)`);
     if (s.started_at != null && !Number.isFinite(Date.parse(s.started_at))) out.push(`pair side ${s.id}: started_at is not a date`);
+    if (s.summary != null && typeof s.summary !== "string") out.push(`pair side ${s.id}: summary must be text (markdown)`);
+    if (s.audio != null) {
+      const src = isObj(s.audio) ? String(s.audio.src || "") : "";
+      if (!src || src.startsWith("/") || src.split("/").includes("..") || !src.startsWith("media/")) out.push(`pair side ${s.id}: audio.src must be a relative path under media/ (got '${src}')`);
+      if (isObj(s.audio) && s.audio.offset_s != null && !finite(s.audio.offset_s)) out.push(`pair side ${s.id}: audio.offset_s must be a number`);
+    }
   }
   if (!Array.isArray(c.segments)) out.push("pair content needs a segments list");
   else {
@@ -40,12 +46,13 @@ const clock = (sec) => {
 export function pairText(c) {
   const sides = Array.isArray(c.sides) ? c.sides : [];
   const head = sides.filter(isObj).map((s) => `${s.label || s.id}${s.note ? ` (${s.note})` : ""}${finite(s.duration_s) ? `, ${Math.round(Number(s.duration_s))}s` : ""}`).join(" | ");
+  const summaries = sides.filter((s) => isObj(s) && typeof s.summary === "string" && s.summary.trim()).map((s) => `${s.label || s.id} summary: ${s.summary.replace(/\s+/g, " ").trim()}`);
   const lines = (Array.isArray(c.segments) ? c.segments : [])
     .filter((s) => isObj(s) && String(s.text || "").trim())
     .slice()
     .sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
     .map((s) => `[${clock(s.start)}] ${s.side} · ${s.is_user ? "You" : s.name || s.speaker || "Speaker"}: ${String(s.text).replace(/\s+/g, " ").trim()}`);
-  return [head, ...lines].filter(Boolean).join("\n");
+  return [head, ...summaries, ...lines].filter(Boolean).join("\n");
 }
 
 /* ---------- converter: transcript (DIVIDER convention) -> pair ---------- */

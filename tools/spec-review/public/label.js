@@ -639,6 +639,49 @@ function pairHeadEl(c, ids, sideOf, win, ex, sim) {
       el("span", { class: `pf${sim.speakersMatch === false ? " warn" : ""}` }, `Speakers ${sim.speakers[0]} · ${sim.speakers[1]}`, sim.speakersMatch == null ? "" : sim.speakersMatch ? " ✓ same count" : " ≠")));
 }
 
+// Per-side panels: each side's own audio (scrub it, or click a line's time to
+// play that side from there) and its summary. Only sides that carry either.
+function pairSidesEl(c, ids, sideOf, ex) {
+  const def = (id) => (c.sides || []).find((s) => s && String(s.id) === id) || { id };
+  const audios = {};
+  const panels = ids.slice(0, 2).map((id) => {
+    const d = def(id);
+    const hasAudio = d.audio && d.audio.src;
+    const hasSummary = typeof d.summary === "string" && d.summary.trim();
+    if (!hasAudio && !hasSummary) return null;
+    let player = null;
+    if (hasAudio) {
+      player = el("audio", { controls: true, preload: "metadata", src: `api/task/${enc(L.taskId)}/media?src=${enc(d.audio.src)}`, "aria-label": `${id} audio` });
+      // One side plays at a time.
+      player.addEventListener("play", () => { for (const [k, a] of Object.entries(audios)) if (k !== id && a && !a.paused) a.pause(); });
+      audios[id] = player;
+    }
+    return el("section", { class: `pair-sidecard ${sideOf(id)}`, "aria-label": `${d.label || id}` },
+      el("div", { class: "psc-head" }, el("span", { class: `pbadge ${sideOf(id)}` }, id), " ", el("strong", {}, d.label || id),
+        d.audio && d.audio.label ? el("span", { class: "muted" }, ` · ${d.audio.label}`) : null),
+      player ? el("div", { class: "audio psc-audio" }, player) : null,
+      hasSummary ? el("div", { class: "psc-summary" },
+        el("div", { class: "psc-summary-label muted" }, "Summary (model-written)"),
+        el("div", { class: "prose", html: md(d.summary) })) : null);
+  }).filter(Boolean);
+  // Axis seconds -> this side's audio time: its audio starts where the side starts on the axis.
+  const seek = (id, axisT) => {
+    const a = audios[id];
+    if (!a) return false;
+    const off = Number((def(id).audio || {}).offset_s) || 0;
+    a.currentTime = Math.max(0, Number(axisT) - ((ex[id] || {}).start || 0) + off);
+    a.play().catch(() => {});
+    return true;
+  };
+  return { node: panels.length ? el("div", { class: "pair-sides" }, panels) : null, seek, has: (id) => !!audios[id] };
+}
+
+// A line's time: a button that plays that side's audio from there when it has audio.
+function pairTimeEl(sides, id, t) {
+  if (!sides || !sides.has(id)) return el("span", { class: "pl-time" }, fmtClock(t));
+  return el("button", { class: "pl-time seg-time", type: "button", tabindex: "-1", title: `play ${id} from here`, onclick: () => sides.seek(id, t) }, fmtClock(t));
+}
+
 function pairEl(c) {
   const P = PL();
   const ids = P.sideIds(c);
@@ -646,6 +689,7 @@ function pairEl(c) {
   const sideOf = (id) => (String(id) === ids[0] ? "sa" : "sb");
   const win = P.overlapOf(c);
   const ex = P.extents(c);
+  const sides = pairSidesEl(c, ids, sideOf, ex);
   const rows = P.mergeLines(c);
   const [w0, w1] = P.windowRange(rows, win, PAIR_PAD_S);
   let from = w0, to = w1;
@@ -659,11 +703,11 @@ function pairEl(c) {
     if (r.kind === "both") {
       const wa = pairWho(r.a), wb = pairWho(r.b);
       return el("div", { class: "pl pl-both" },
-        el("div", { class: "pl-meta" }, el("span", { class: "pbadge both", title: "said on both sides" }, `${ids[0]}+${ids[1]}`), el("span", { class: "pl-time" }, fmtClock(r.start)), el("span", { class: "pl-who" }, wa === wb ? wa : `${wa} / ${wb}`)),
+        el("div", { class: "pl-meta" }, el("span", { class: "pbadge both", title: "said on both sides" }, `${ids[0]}+${ids[1]}`), pairTimeEl(sides, ids[0], r.start), el("span", { class: "pl-who" }, wa === wb ? wa : `${wa} / ${wb}`)),
         el("div", { class: "pl-text cm-block", "data-anchor": `${ids[0]}+${ids[1]}@${fmtClock(r.start)}` }, r.a.text.trim() === r.b.text.trim() ? r.a.text : pairDiffRuns(r.a.text, r.b.text)));
     }
     return el("div", { class: `pl pl-one ${sideOf(r.kind)}` },
-      el("div", { class: "pl-meta" }, el("span", { class: `pbadge ${sideOf(r.kind)}`, title: `only in ${r.kind}` }, r.kind), el("span", { class: "pl-time" }, fmtClock(r.start)), el("span", { class: "pl-who" }, pairWho(r.seg))),
+      el("div", { class: "pl-meta" }, el("span", { class: `pbadge ${sideOf(r.kind)}`, title: `only in ${r.kind}` }, r.kind), pairTimeEl(sides, r.kind, r.start), el("span", { class: "pl-who" }, pairWho(r.seg))),
       el("div", { class: "pl-text cm-block", "data-anchor": `${r.kind}@${fmtClock(r.start)}` }, r.seg.text));
   };
   const more = (dir, n) => el("button", { class: "pair-more", type: "button", onclick: () => {
@@ -696,7 +740,7 @@ function pairEl(c) {
       };
       const grid = el("div", { class: "pair-side" },
         el("div", { class: "ps-h" }), ...ids.slice(0, 2).map((id) => el("div", { class: `ps-h ${sideOf(id)}` }, el("span", { class: `pbadge ${sideOf(id)}` }, id), " ", ((c.sides || []).find((s) => s && String(s.id) === id) || {}).label || "")),
-        slice.flatMap((r) => [el("div", { class: "ps-time" }, fmtClock(r.start)), cell(0, r), cell(1, r)]));
+        slice.flatMap((r) => [el("div", { class: "ps-time" }, pairTimeEl(sides, r.kind === "both" ? ids[0] : r.kind, r.start)), cell(0, r), cell(1, r)]));
       body.replaceChildren(...[windowNote(), from > 0 ? more(-1, from) : null, grid, to < rows.length ? more(1, rows.length - to) : null].filter(Boolean));
       return;
     }
@@ -706,7 +750,7 @@ function pairEl(c) {
         el("span", { class: `pbadge ${sideOf(id)}` }, id), " ", ((c.sides || []).find((s) => s && String(s.id) === id) || {}).label || "")));
     const mine = slice.flatMap((r) => r.kind === "both" ? [{ seg: phoneSide === ids[0] ? r.a : r.b, both: true, start: r.start }] : r.kind === phoneSide ? [{ seg: r.seg, both: false, start: r.start }] : []);
     const list = el("div", { class: "pair-lines" }, mine.map((x) => el("div", { class: `pl pl-one ${sideOf(phoneSide)}${x.both ? " also" : ""}` },
-      el("div", { class: "pl-meta" }, el("span", { class: "pl-time" }, fmtClock(Number(x.seg.start) || x.start)), el("span", { class: "pl-who" }, pairWho(x.seg)), x.both ? el("span", { class: "pl-also", title: "the other side says this too" }, `also in ${phoneSide === ids[0] ? ids[1] : ids[0]}`) : null),
+      el("div", { class: "pl-meta" }, pairTimeEl(sides, phoneSide, Number(x.seg.start) || x.start), el("span", { class: "pl-who" }, pairWho(x.seg)), x.both ? el("span", { class: "pl-also", title: "the other side says this too" }, `also in ${phoneSide === ids[0] ? ids[1] : ids[0]}`) : null),
       el("div", { class: "pl-text" }, x.seg.text))));
     if (!mine.length) list.append(el("div", { class: "empty-seg" }, "(nothing from this side in the window)"));
     body.replaceChildren(...[pick, windowNote(), from > 0 ? more(-1, from) : null, list, to < rows.length ? more(1, rows.length - to) : null].filter(Boolean));
@@ -724,7 +768,7 @@ function pairEl(c) {
     el("span", {}, el("span", { class: "pbadge both" }, `${ids[0]}+${ids[1]}`), " said on both"),
     el("span", {}, el("mark", { class: "pd pd-a" }, "words"), ` only in ${ids[0]}`),
     el("span", {}, el("mark", { class: "pd pd-b" }, "words"), ` only in ${ids[1]}`));
-  root.append(pairHeadEl(c, ids, sideOf, win, ex, P.similarity(c, win)), tabs, legend, body);
+  root.append(...[pairHeadEl(c, ids, sideOf, win, ex, P.similarity(c, win)), sides.node, tabs, legend, body].filter(Boolean));
   return root;
 }
 // Side by side switches layout at 900px: repaint an open pair when crossing it.

@@ -220,6 +220,14 @@ until the card is labeled, as for every content type.
 | `sides[]` | Exactly two: `id` (short, shown as the badge: `A`, `B`), `label`, and where the side sits on the axis — `start` (seconds on the shared axis) or `started_at` (ISO; the earliest side is 0) — plus `duration_s`. Without either, the side's extent is its segments'. `note` is shown after the length (device, model). |
 | `segments[]` | `side` (a side id), `start` and optional `end` in seconds **on the shared axis**, `text`, and `speaker` / `name` / `is_user` as in a transcript. Any order. |
 | `overlap` | Optional `{start, end}` on the axis; computed from the sides when absent. No overlap: the strip says so and every view shows everything. |
+| `sides[].summary` | Optional markdown: what that side is about (a model-written summary, a note). Shown in the side's panel under the timeline, labeled model-written. |
+| `sides[].audio` | Optional `{src, label, offset_s}`: that side's own recording. `src` must be under the task's `media/` directory. The side's panel gets a scrubbable player, and every line's time becomes a button that plays **that side** from that moment: audio time = the line's axis time − the side's start on the axis + `offset_s` (default 0; use it when the file starts before the side). One side plays at a time. |
+
+When the question needs the reviewer to *hear* both sides (are these two stretches
+of audio one occasion? did both devices hear the same thing?), give each side its
+own `audio` and `summary` instead of one item-level `media` file: the reviewer can
+scrub each recording, and the summaries tell them what each side is about before
+they read a line.
 
 `examples/labels/pair-demo/` is a fictional task with a short fragment inside a
 long recording, an overlap that is a different conversation, two devices that

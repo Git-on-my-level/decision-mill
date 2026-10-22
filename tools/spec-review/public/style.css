@@ -1074,3 +1074,16 @@ div.home-card { position: relative; }
   .inbox-row { grid-template-columns: 1fr; }
 }
 .cm-section + .cm-section { margin-top: 1.1em; }
+
+/* pair: per-side audio and summary panels */
+.pair-sides { display: grid; gap: 10px; margin: 10px 0 6px; grid-template-columns: 1fr; }
+@media (min-width: 900px) { .pair-sides { grid-template-columns: 1fr 1fr; } }
+.pair-sidecard { border: 1px solid var(--line, #3334); border-radius: 10px; padding: 10px 12px; border-left-width: 4px; }
+.pair-sidecard.sa { border-left-color: var(--pair-a, #4a8cff); }
+.pair-sidecard.sb { border-left-color: var(--pair-b, #e0a020); }
+.psc-head { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; flex-wrap: wrap; }
+.psc-audio audio { width: 100%; }
+.psc-summary { margin-top: 8px; }
+.psc-summary-label { font-size: 0.8em; margin-bottom: 2px; }
+.psc-summary .prose { font-size: 0.95em; }
+button.pl-time { background: none; border: 0; padding: 0; cursor: pointer; color: inherit; text-decoration: underline dotted; font: inherit; }

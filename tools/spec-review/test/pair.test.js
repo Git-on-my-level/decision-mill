@@ -191,3 +191,29 @@ test("item API serves pair items blind, and search finds their lines", async () 
     await srv.stop();
   }
 });
+
+test("pair sides may carry their own audio and summary", () => {
+  const c = {
+    type: "pair",
+    sides: [
+      { id: "A", label: "Before", started_at: "2026-10-14T10:00:00Z", duration_s: 300, summary: "Planning **lunch**.", audio: { src: "media/a.m4a", label: "pendant" } },
+      { id: "B", label: "After", started_at: "2026-10-14T10:12:00Z", duration_s: 120, summary: "Back at the desk.", audio: { src: "media/b.m4a", offset_s: 2.5 } },
+    ],
+    segments: [
+      { side: "A", start: 10, text: "where should we eat" },
+      { side: "B", start: 730, text: "ok back to the review" },
+    ],
+  };
+  assert.deepEqual(pairProblems(c), []);
+  const text = pairText(c);
+  assert.match(text, /Before summary: Planning \*\*lunch\*\*\./);
+  assert.match(text, /After summary: Back at the desk\./);
+  const bad = structuredClone(c);
+  bad.sides[0].audio = { src: "../secret.m4a" };
+  bad.sides[1].summary = { md: "x" };
+  bad.sides[1].audio.offset_s = "soon";
+  const problems = pairProblems(bad);
+  assert.ok(problems.some((p) => /side A: audio.src must be a relative path under media\//.test(p)), problems.join("; "));
+  assert.ok(problems.some((p) => /side B: summary must be text/.test(p)));
+  assert.ok(problems.some((p) => /side B: audio.offset_s must be a number/.test(p)));
+});
