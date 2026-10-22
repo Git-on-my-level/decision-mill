@@ -40,3 +40,10 @@ test("the bundled demo task loads clean", () => {
   assert.deepEqual(warnings, []);
   assert.equal(items.length, 12);
 });
+
+test("summary layout: summary first by default; open and collapsed opt out", () => {
+  assert.equal(normalizeTask({ labels: [{ id: "a" }] }, "x").task.summary, "first");
+  assert.equal(normalizeTask({ labels: [{ id: "a" }], summary: "open" }, "x").task.summary, "open");
+  assert.equal(normalizeTask({ labels: [{ id: "a" }], summary: "collapsed" }, "x").task.summary, "collapsed");
+  assert.equal(normalizeTask({ labels: [{ id: "a" }], summary: "sideways" }, "x").task.summary, "first");
+});

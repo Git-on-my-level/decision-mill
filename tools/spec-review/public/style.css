@@ -1087,3 +1087,10 @@ div.home-card { position: relative; }
 .psc-summary-label { font-size: 0.8em; margin-bottom: 2px; }
 .psc-summary .prose { font-size: 0.95em; }
 button.pl-time { background: none; border: 0; padding: 0; cursor: pointer; color: inherit; text-decoration: underline dotted; font: inherit; }
+
+/* summary: first — the summary leads the card; the transcript is optional context */
+.summary.summary-first { margin: 4px 0 12px; }
+.summary.summary-first > .prose { font-size: 1.02em; }
+.lc-context-content { margin: 8px 0; border-top: 1px solid var(--line, #3334); padding-top: 8px; }
+.lc-context-content > summary { cursor: pointer; color: var(--muted, #999); }
+.summary > .prose h1, .summary > .prose h2, .summary > .prose h3 { font-size: 1em; margin: 0.8em 0 0.3em; }
