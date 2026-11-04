@@ -32,6 +32,9 @@ const waves = () => L.data?.waves || null;
 const unitName = () => (waves() ? "Wave" : "Round");
 const roundIds = () => L.rounds[L.roundIdx]?.ids || [];
 const currentId = () => roundIds()[L.pos] || null;
+// A field with `variant: B` belongs to version B of a `variants` item and is shown
+// (and its key works) only on cards that have that version.
+const fieldShown = (f, item) => f.variant == null || !!item?.content?.variants?.some((v) => String(v.id) === String(f.variant));
 const labelOf = (id) => L.index.get(id)?.label ?? null;
 const labelDef = (id) => L.task?.labels.find((l) => l.id === id) || null;
 const labeledCount = () => [...L.index.values()].filter((r) => r.label != null).length;
@@ -955,7 +958,7 @@ function actionBar(entry) {
     el("button", { class: `choice tone-${toneOf(l)}${cur === l.id ? " sel" : ""}`, type: "button", "data-label": l.id, tabindex: "-1",
       onclick: () => pick(l.id) }, el("span", {}, l.label), l.key ? enter(l.key) : null)));
 
-  const fieldEls = t.fields.map((f) => {
+  const fieldEls = t.fields.filter((f) => fieldShown(f, item)).map((f) => {
     if (f.type === "checkbox") {
       const on = Boolean(fields[f.id]);
       return el("button", { class: `field-toggle${on ? " on" : ""}`, type: "button", tabindex: "-1", "aria-pressed": String(on), onclick: () => toggleField(f.id) },
@@ -1804,7 +1807,7 @@ App.keyHandlers.label = (e) => {
   if (k === "Enter" && L.suggestions?.[currentId()]) { pick(L.suggestions[currentId()].label,"suggested-accepted"); return true; }
   const l = L.task.labels.find((x) => x.key === lk);
   if (l) { pick(l.id); return true; }
-  const f = L.task.fields.find((x) => x.key === lk && x.type === "checkbox");
+  const f = L.task.fields.find((x) => x.key === lk && x.type === "checkbox" && fieldShown(x, L.cache.get(currentId())?.item));
   if (f) { toggleField(f.id); return true; }
   if (k === "s" && !keys.has("s")) { skipForNow(); return true; }
   if (k === "j" || k === "ArrowRight") { step(1); return true; }

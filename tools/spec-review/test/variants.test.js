@@ -95,3 +95,9 @@ test("the fictional variants-asr-demo task parses with no warnings", () => {
   assert.equal(res.items.length, 4);
   assert.deepEqual(res.warnings.filter((w) => /variants|content/.test(w)), []);
 });
+
+test("a field's `variant` survives task normalization", () => {
+  const { task } = normalizeTask({ labels: [{ id: "A" }], fields: [{ id: "usable_B", type: "checkbox", key: "b", variant: "B" }, { id: "note", type: "text" }] }, "t");
+  assert.equal(task.fields[0].variant, "B");
+  assert.equal(task.fields[1].variant, undefined);
+});

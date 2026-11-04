@@ -124,6 +124,7 @@ export function normalizeTask(raw, dirName) {
       keyOwner.set(out.key, `field ${out.id}`);
       if (type !== "checkbox") warnings.push(`field '${out.id}': only checkbox fields use a key`);
     }
+    if (f.variant != null) out.variant = String(f.variant);
     t.fields.push(out);
   }
 

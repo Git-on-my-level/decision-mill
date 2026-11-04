@@ -284,7 +284,9 @@ least 900 px wide, stacked on a phone), and does the comparison for the reviewer
 
 Assign letters with [`letters.js`](#variant-letters) so no variant sits under the
 same letter too often. Per-variant ticks ("A good enough") are ordinary `fields`
-checkboxes named `usable_A`, `usable_B`, …; map them back through `hidden.letters`
+checkboxes named `usable_A`, `usable_B`, … with `variant: A` (…): a field with
+`variant` is shown, and its key works, only on cards that have that version, so a
+two-version card does not offer a box for C. Map them back through `hidden.letters`
 when reading labels. `examples/labels/variants-asr-demo/` is a fictional task: four
 invented engines transcribing one clip, including an empty output and a Japanese clip.
 

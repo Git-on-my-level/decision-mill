@@ -16,10 +16,10 @@ labels:
   - {id: tie, label: Tie, key: "5", tone: neutral}
   - {id: none, label: None usable, key: "6", tone: negative}
 fields:
-  - {id: usable_A, type: checkbox, label: A good enough, key: a}
-  - {id: usable_B, type: checkbox, label: B good enough, key: b}
-  - {id: usable_C, type: checkbox, label: C good enough, key: c}
-  - {id: usable_D, type: checkbox, label: D good enough, key: d}
+  - {id: usable_A, type: checkbox, label: A good enough, key: a, variant: A}
+  - {id: usable_B, type: checkbox, label: B good enough, key: b, variant: B}
+  - {id: usable_C, type: checkbox, label: C good enough, key: c, variant: C}
+  - {id: usable_D, type: checkbox, label: D good enough, key: d, variant: D}
 blind: true
 round_size: 4
 meta_display: [duration_s]
