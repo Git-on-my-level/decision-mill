@@ -71,10 +71,12 @@ test("runs merge adjacent pieces and keep the original text intact", () => {
   for (let i = 0; i < 3; i++) assert.equal(V.runs(a[i].pieces).map((r) => r.text).join(""), texts[i]);
 });
 
-test("variantsProblems: needs 2 to 6 distinct variants with text", () => {
+test("variantsProblems: needs 1 to 6 distinct variants with text", () => {
   assert.deepEqual(variantsProblems({ variants: [{ id: "A", text: "x" }, { id: "B", text: "" }] }), []);
   assert.ok(variantsProblems({}).length);
-  assert.ok(variantsProblems({ variants: [{ id: "A", text: "x" }] }).some((p) => /2 to 6/.test(p)));
+  assert.deepEqual(variantsProblems({ variants: [{ id: "A", text: "x" }] }), []);
+  assert.ok(variantsProblems({ variants: [] }).some((p) => /1 to 6/.test(p)));
+  assert.ok(variantsProblems({ variants: Array.from({ length: 7 }, (_, i) => ({ id: String(i), text: "x" })) }).some((p) => /1 to 6/.test(p)));
   assert.ok(variantsProblems({ variants: [{ id: "A", text: "x" }, { id: "A", text: "y" }] }).some((p) => /differ/.test(p)));
   assert.ok(variantsProblems({ variants: [{ id: "A", text: "x" }, { id: "B" }] }).some((p) => /text must be a string/.test(p)));
 });
@@ -100,4 +102,10 @@ test("a field's `variant` survives task normalization", () => {
   const { task } = normalizeTask({ labels: [{ id: "A" }], fields: [{ id: "usable_B", type: "checkbox", key: "b", variant: "B" }, { id: "note", type: "text" }] }, "t");
   assert.equal(task.fields[0].variant, "B");
   assert.equal(task.fields[1].variant, undefined);
+});
+
+test("a single version has nothing to disagree with, so nothing is marked", () => {
+  const a = V.analyze([{ id: "A", text: "all four engines said this" }]);
+  assert.deepEqual(oddWords(a[0]), []);
+  assert.deepEqual(a[0].same, []);
 });

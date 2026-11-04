@@ -1,11 +1,11 @@
-// The `variants` content type (LABELS.md, "Variants side by side"): 2 to 6
+// The `variants` content type (LABELS.md, "Variants side by side"): 1 to 6
 // versions of the same thing (transcripts of one clip from different engines,
 // notes from different models) shown as aligned columns under their letters, with
 // the words that the other versions do not support marked.
 
 const isObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
 
-export const VARIANTS_MIN = 2;
+export const VARIANTS_MIN = 1;
 export const VARIANTS_MAX = 6;
 
 // Problems with a variants content block, as warnings (the item is still shown).

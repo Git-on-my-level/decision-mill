@@ -103,7 +103,7 @@ One JSON object per line:
 | Key | Required | Meaning |
 | --- | -------- | ------- |
 | `id` | yes | Unique string. Labels reference it forever; never reuse one. |
-| `content` | yes | `{"type": "transcript", "segments": [...]}`, `{"type": "markdown", "body": "…"}`, `{"type": "text", "body": "…"}`, `{"type": "proposal", …}` (a proposed edit to judge; see [Proposal items](#proposal-items)), or `{"type": "pair", …}` (two sides to compare on one time axis; see [Pair items](#pair-items)), or `{"type": "variants", …}` (2 to 6 versions of the same thing in aligned columns; see [Variants side by side](#variants-side-by-side)). |
+| `content` | yes | `{"type": "transcript", "segments": [...]}`, `{"type": "markdown", "body": "…"}`, `{"type": "text", "body": "…"}`, `{"type": "proposal", …}` (a proposed edit to judge; see [Proposal items](#proposal-items)), or `{"type": "pair", …}` (two sides to compare on one time axis; see [Pair items](#pair-items)), or `{"type": "variants", …}` (1 to 6 versions of the same thing in aligned columns; see [Variants side by side](#variants-side-by-side)). |
 | `segments[]` | — | `speaker`, `is_user` (styled as the reviewer), `start` seconds (shown as a timestamp; clickable when audio exists), `text`, optional `name` (display name). |
 | `title` | no | Shown above the content. |
 | `url` | no | Permalink to where the item came from (the pull request, doc, thread or dashboard). Shown as a quiet "Source ↗" link at the right of the title row, opening in a new tab. Only `http:`/`https:` URLs become links; anything else is not shown, and the validator warns. Visible even when blind, and left out of search text and stand-in briefs. |
@@ -249,7 +249,8 @@ file, then swap it in yourself.
 ## Variants side by side
 
 Use `content.type: variants` when the reviewer must compare **2 to 6 versions of
-the same thing** and reading them one under another makes the comparison hard:
+the same thing** (a single version is allowed, e.g. when every engine said the same;
+nothing is marked then) and reading them one under another makes the comparison hard:
 transcripts of one clip from different engines, notes from different models. The
 card puts them in aligned columns under their letters (four across on a screen at
 least 900 px wide, stacked on a phone), and does the comparison for the reviewer:

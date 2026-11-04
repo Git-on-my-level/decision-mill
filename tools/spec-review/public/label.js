@@ -592,7 +592,7 @@ const varMarkGet = () => store.get(`varmark:${L.taskId}`, "on") !== "off";
 function variantsEl(c) {
   const V = globalThis.VariantsLogic;
   const vs = (Array.isArray(c.variants) ? c.variants : []).filter((v) => v && v.id != null);
-  if (vs.length < 2) return el("div", { class: "empty-seg" }, "(variants content needs at least two variants)");
+  if (!vs.length) return el("div", { class: "empty-seg" }, "(variants content needs at least one variant)");
   const info = V.analyze(vs.map((v) => ({ id: String(v.id), text: String(v.text ?? "") })));
   let mark = varMarkGet();
   const grid = el("div", { class: `var-grid n${Math.min(vs.length, 4)}` });
@@ -619,7 +619,7 @@ function variantsEl(c) {
   toggle.onclick = () => { mark = !mark; store.set(`varmark:${L.taskId}`, mark ? "on" : "off"); paint(); };
   paint();
   return el("div", { class: "variants" },
-    el("div", { class: "var-bar" }, toggle, el("span", { class: "var-legend" }, el("mark", { class: "vd" }, "marked"), " = most other versions do not have this")),
+    vs.length > 1 ? el("div", { class: "var-bar" }, toggle, el("span", { class: "var-legend" }, el("mark", { class: "vd" }, "marked"), " = most other versions do not have this")) : null,
     grid);
 }
 

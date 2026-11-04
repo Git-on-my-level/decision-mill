@@ -55,13 +55,13 @@ function analyze(variants) {
   for (let i = 0; i < variants.length; i++) for (let j = i + 1; j < variants.length; j++) {
     for (const [x, y] of lcsPairs(keys[i], keys[j])) { support[i][x]++; support[j][y]++; }
   }
-  const others = Math.max(1, variants.length - 1);
+  const others = variants.length - 1;
   return variants.map((v, i) => {
     let k = 0;
     const pieces = toks[i].map((p) => {
       if (p.key == null) return { text: p.text, odd: false };
       const s = support[i][k++];
-      return { text: p.text, odd: s * 2 < others };
+      return { text: p.text, odd: others > 0 && s * 2 < others };
     });
     const same = variants.filter((_, j) => j !== i && keys[j].length === keys[i].length && keys[j].every((w, x) => w === keys[i][x])).map((x) => x.id);
     return { id: v.id, pieces, words: keys[i].length, odd: pieces.filter((p) => p.odd).length, same };
