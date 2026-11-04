@@ -1,0 +1,34 @@
+# Fictional demo of the `variants` content type: transcripts of one clip from
+# four invented engines shown side by side, with the words the others do not
+# support marked. Every name and sentence here is invented.
+id: variants-asr-demo
+title: Which transcript is right? — fictional clips (blind)
+question: Which transcript is most accurate to what was said?
+instructions: |
+  Play the clip, then read the versions side by side. Marked words are ones most
+  of the other versions do not have: usually where the real disagreement is.
+  Pick the most accurate one, then tick every version that is good enough to use.
+labels:
+  - {id: A, label: A is best, key: "1"}
+  - {id: B, label: B is best, key: "2"}
+  - {id: C, label: C is best, key: "3"}
+  - {id: D, label: D is best, key: "4"}
+  - {id: tie, label: Tie, key: "5", tone: neutral}
+  - {id: none, label: None usable, key: "6", tone: negative}
+fields:
+  - {id: usable_A, type: checkbox, label: A good enough, key: a}
+  - {id: usable_B, type: checkbox, label: B good enough, key: b}
+  - {id: usable_C, type: checkbox, label: C good enough, key: c}
+  - {id: usable_D, type: checkbox, label: D good enough, key: d}
+blind: true
+round_size: 4
+meta_display: [duration_s]
+models:
+  - {id: fern, verdict_path: hidden.fern_letter}
+  - {id: moss, verdict_path: hidden.moss_letter}
+  - {id: reed, verdict_path: hidden.reed_letter}
+  - {id: sage, verdict_path: hidden.sage_letter}
+workspace: demo
+decision: Which engine ships as the default transcriber?
+enough_when: {labels: 4}
+minutes_per_round: 3

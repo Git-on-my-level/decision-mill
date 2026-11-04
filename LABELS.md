@@ -103,7 +103,7 @@ One JSON object per line:
 | Key | Required | Meaning |
 | --- | -------- | ------- |
 | `id` | yes | Unique string. Labels reference it forever; never reuse one. |
-| `content` | yes | `{"type": "transcript", "segments": [...]}`, `{"type": "markdown", "body": "…"}`, `{"type": "text", "body": "…"}`, `{"type": "proposal", …}` (a proposed edit to judge; see [Proposal items](#proposal-items)), or `{"type": "pair", …}` (two sides to compare on one time axis; see [Pair items](#pair-items)). |
+| `content` | yes | `{"type": "transcript", "segments": [...]}`, `{"type": "markdown", "body": "…"}`, `{"type": "text", "body": "…"}`, `{"type": "proposal", …}` (a proposed edit to judge; see [Proposal items](#proposal-items)), or `{"type": "pair", …}` (two sides to compare on one time axis; see [Pair items](#pair-items)), or `{"type": "variants", …}` (2 to 6 versions of the same thing in aligned columns; see [Variants side by side](#variants-side-by-side)). |
 | `segments[]` | — | `speaker`, `is_user` (styled as the reviewer), `start` seconds (shown as a timestamp; clickable when audio exists), `text`, optional `name` (display name). |
 | `title` | no | Shown above the content. |
 | `url` | no | Permalink to where the item came from (the pull request, doc, thread or dashboard). Shown as a quiet "Source ↗" link at the right of the title row, opening in a new tab. Only `http:`/`https:` URLs become links; anything else is not shown, and the validator warns. Visible even when blind, and left out of search text and stand-in briefs. |
@@ -245,6 +245,48 @@ It keeps every other key (`id`, `stratum`, `title`, `meta`, `summary`, `hidden`,
 `truncated`, …), so existing labels stay attached; items that do not follow the
 convention pass through unchanged. It never rewrites its input: check the new
 file, then swap it in yourself.
+
+## Variants side by side
+
+Use `content.type: variants` when the reviewer must compare **2 to 6 versions of
+the same thing** and reading them one under another makes the comparison hard:
+transcripts of one clip from different engines, notes from different models. The
+card puts them in aligned columns under their letters (four across on a screen at
+least 900 px wide, stacked on a phone), and does the comparison for the reviewer:
+
+- **Marked words.** Each version is aligned with every other by longest common
+  subsequence; a word that fewer than half of the other versions say at that
+  point is marked. With three versions where one says "Miro" and two say
+  "Mirexu", "Miro" is marked; with two versions each difference is marked on both.
+  Spaceless scripts (Japanese, Chinese, Thai, …) compare per character. A toggle
+  above the columns turns marks off; the choice is remembered per task.
+- **Same words.** A version whose words are exactly those of another (ignoring
+  case and punctuation) says so in its header, so duplicate outputs cost no
+  reading. An empty `text` shows "(nothing transcribed)", which is itself an answer.
+- **Comments.** Each column is its own commentable block anchored by the variant
+  `id`, so a comment on "B" resolves to B's model exactly as for `## B` markdown.
+
+```json
+{"id": "clip-01", "title": "Glaze order call", "meta": {"duration_s": 14},
+ "media": [{"type": "audio", "src": "media/clip-01.m4a", "label": "Audio"}],
+ "content": {"type": "variants", "variants": [
+   {"id": "A", "text": "We need to move the glaze order to Thursday and call Mirexu."},
+   {"id": "B", "text": "We need to move the glaze order to Thursday and call Miro.", "note": "optional caption"},
+   {"id": "C", "text": ""}]},
+ "hidden": {"letters": {"A": "fern", "B": "moss", "C": "reed"}}}
+```
+
+| Key | Meaning |
+| --- | ------- |
+| `variants[].id` | Required, unique: the letter shown in the badge and the comment anchor. |
+| `variants[].text` | Required string (may be empty for "no output"). Line breaks are kept. |
+| `variants[].label`, `note` | Optional caption next to the badge. Never put the model name here while the task is blind; use `hidden.letters`. |
+
+Assign letters with [`letters.js`](#variant-letters) so no variant sits under the
+same letter too often. Per-variant ticks ("A good enough") are ordinary `fields`
+checkboxes named `usable_A`, `usable_B`, …; map them back through `hidden.letters`
+when reading labels. `examples/labels/variants-asr-demo/` is a fictional task: four
+invented engines transcribing one clip, including an empty output and a Japanese clip.
 
 ## labels/\<reviewer\>.jsonl
 

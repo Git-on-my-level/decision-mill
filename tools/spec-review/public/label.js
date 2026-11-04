@@ -386,6 +386,7 @@ function contentEl(c, audioRef) {
     el("div", { class: "cm-block cm-section", "data-anchor": sec.anchor, html: md(sec.md) })));
   if (c.type === "proposal") return proposalEl(c);
   if (c.type === "pair") return pairEl(c);
+  if (c.type === "variants") return variantsEl(c);
   return el("div", { class: "plain doc cm-block", "data-anchor": "body" }, String(c.body ?? ""));
 }
 
@@ -574,6 +575,49 @@ function proposalEl(c) {
           terms.some((t) => t.side === "after") ? el("mark", { class: "hl hl-after" }, "new value") : null) : null),
       evidence.map((e, j) => evidenceEl(e || {}, mark, j))) : null,
     policyEl(c));
+}
+
+/* ---------- variants: 2-6 versions of the same thing, side by side ----------
+   One column per version under its letter, aligned so the reader scans across.
+   Words that fewer than half of the other versions say at that point are marked
+   (a toggle turns the marks off, remembered per task); a version with exactly the
+   same words as another says so. Each column is its own commentable block,
+   anchored by the variant id (so a comment on "B" resolves to B's model). */
+const VAR_COLORS = 6;
+const varMarkGet = () => store.get(`varmark:${L.taskId}`, "on") !== "off";
+
+function variantsEl(c) {
+  const V = globalThis.VariantsLogic;
+  const vs = (Array.isArray(c.variants) ? c.variants : []).filter((v) => v && v.id != null);
+  if (vs.length < 2) return el("div", { class: "empty-seg" }, "(variants content needs at least two variants)");
+  const info = V.analyze(vs.map((v) => ({ id: String(v.id), text: String(v.text ?? "") })));
+  let mark = varMarkGet();
+  const grid = el("div", { class: `var-grid n${Math.min(vs.length, 4)}` });
+  const toggle = el("button", { class: "var-toggle", type: "button", "aria-pressed": String(mark), tabindex: "-1" });
+  const paint = () => {
+    toggle.textContent = mark ? "Differences marked" : "Mark differences";
+    toggle.setAttribute("aria-pressed", String(mark));
+    grid.replaceChildren(...vs.map((v, i) => {
+      const a = info[i], id = String(v.id);
+      const text = String(v.text ?? "");
+      const body = text.trim()
+        ? V.runs(a.pieces).map((r) => (mark && r.odd ? el("mark", { class: "vd" }, r.text) : r.text))
+        : [el("span", { class: "var-empty" }, "(nothing transcribed)")];
+      return el("section", { class: `var-col vc${i % VAR_COLORS}`, "aria-label": `Version ${id}` },
+        el("header", { class: "var-head" },
+          el("span", { class: "pbadge vbadge" }, id),
+          v.label && v.label !== id ? el("span", { class: "var-label" }, v.label) : null,
+          v.note ? el("span", { class: "var-note" }, v.note) : null,
+          a.same.length ? el("span", { class: "var-same", title: "exactly the same words, ignoring punctuation and case" }, `same words as ${a.same.join(", ")}`) : null),
+        el("div", { class: "var-text cm-block", "data-anchor": id }, body),
+        el("footer", { class: "var-foot" }, `${a.words} word${a.words === 1 ? "" : "s"}`));
+    }));
+  };
+  toggle.onclick = () => { mark = !mark; store.set(`varmark:${L.taskId}`, mark ? "on" : "off"); paint(); };
+  paint();
+  return el("div", { class: "variants" },
+    el("div", { class: "var-bar" }, toggle, el("span", { class: "var-legend" }, el("mark", { class: "vd" }, "marked"), " = most other versions do not have this")),
+    grid);
 }
 
 /* ---------- pair: two sides on one time axis, "are these the same thing?" ----------

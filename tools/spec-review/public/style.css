@@ -1094,3 +1094,26 @@ button.pl-time { background: none; border: 0; padding: 0; cursor: pointer; color
 .lc-context-content { margin: 8px 0; border-top: 1px solid var(--line, #3334); padding-top: 8px; }
 .lc-context-content > summary { cursor: pointer; color: var(--muted, #999); }
 .summary > .prose h1, .summary > .prose h2, .summary > .prose h3 { font-size: 1em; margin: 0.8em 0 0.3em; }
+
+/* ---------- variants: 2-6 versions of the same thing, side by side ---------- */
+.variants { display: grid; gap: 8px; }
+.var-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 12px; color: var(--faint); }
+.var-toggle { background: none; border: 1px solid var(--line); border-radius: 7px; padding: 2px 9px; font: 600 12px var(--sans); color: var(--muted); cursor: pointer; }
+.var-toggle[aria-pressed="true"] { color: var(--ink); border-color: var(--muted); }
+.var-grid { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 900px) {
+  .var-grid.n2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .var-grid.n3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .var-grid.n4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+.var-col { --vc: var(--unify); min-width: 0; padding: 8px 12px 6px; border-radius: 9px; background: var(--panel-2); border-left: 3px solid var(--vc); display: flex; flex-direction: column; gap: 4px; }
+.var-col.vc1 { --vc: var(--metric); } .var-col.vc2 { --vc: var(--keep); } .var-col.vc3 { --vc: var(--team); }
+.var-col.vc4 { --vc: var(--toss); } .var-col.vc5 { --vc: var(--muted); }
+.vbadge { background: var(--vc); }
+.var-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--muted); }
+.var-label { font-weight: 650; color: var(--ink); }
+.var-same { color: var(--faint); font-style: italic; }
+.var-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15px; line-height: 1.6; flex: 1; }
+.var-empty { color: var(--faint); font-style: italic; }
+.var-foot { font: 11px var(--mono); color: var(--faint); }
+mark.vd { background: color-mix(in srgb, var(--metric) 24%, transparent); border-bottom: 2px solid var(--metric); color: inherit; border-radius: 2px; }
