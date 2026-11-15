@@ -909,9 +909,12 @@ function cardEl(entry) {
   const t = L.task;
   const { node: media, audio } = mediaEl(item);
   // The summary is markdown. With `summary: first` it leads the card, open, and the
-  // content (transcript, audio) becomes optional context below it, collapsed.
-  const first = t.summary === "first" && !!item.summary;
-  const summary = item.summary ? el("details", { class: `summary${first ? " summary-first" : ""}`, open: t.summary === "open" || first },
+  // content (transcript, audio) becomes optional context below it, collapsed. Content
+  // that is itself being judged (variants, pair, proposal) is never collapsed: it
+  // leads and the summary sits open under it (ViewLogic.summaryPlacement).
+  const place = ViewLogic.summaryPlacement(t.summary, item);
+  const first = place === "lead";
+  const summary = item.summary ? el("details", { class: `summary${first ? " summary-first" : ""}`, open: place !== "collapsed" },
     el("summary", {}, "Summary", el("span", { class: "hint" }, " — written by a model from this transcript; it can make a fragment look meaningful")),
     el("div", { class: "prose cm-block", "data-anchor": "summary", html: md(item.summary) })) : null;
   const segs = item.content?.type === "transcript" ? (item.content.segments || []).length : 0;

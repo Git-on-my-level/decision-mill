@@ -108,7 +108,7 @@ One JSON object per line:
 | `title` | no | Shown above the content. |
 | `url` | no | Permalink to where the item came from (the pull request, doc, thread or dashboard). Shown as a quiet "Source ↗" link at the right of the title row, opening in a new tab. Only `http:`/`https:` URLs become links; anything else is not shown, and the validator warns. Visible even when blind, and left out of search text and stand-in briefs. |
 | `meta` | no | Shown as chips on the card (only the keys in `meta_display`). **Always visible, even when blind — never put model output here.** |
-| `summary` | no | Markdown, labeled as model-written (a summary can make a fragment look meaningful). By default (task `summary: first`) it leads the card, open, and the content (transcript, audio) is collapsed below it as optional context, so the reviewer judges from the summary and checks the transcript when needed. `summary: open` keeps the content first with the summary open below it; `summary: collapsed` hides it behind a toggle (use that when a summary would bias the judgment, e.g. keep/noise on raw fragments). |
+| `summary` | no | Markdown, labeled as model-written (a summary can make a fragment look meaningful). By default (task `summary: first`) it leads the card, open, and the content (transcript, audio) is collapsed below it as optional context, so the reviewer judges from the summary and checks the transcript when needed. Content that is itself being judged (`variants`, `pair`, `proposal`) is never collapsed: it always leads the card and the summary sits open below it, whatever the task says. `summary: open` keeps the content first with the summary open below it; `summary: collapsed` hides it behind a toggle (use that when a summary would bias the judgment, e.g. keep/noise on raw fragments). |
 | `context[]` | no | Neighboring items so the reviewer is not judging a snippet. `relation` is `before` / `after` / `overlapping`, `gap_min` minutes, `title`, `summary`, and optionally `segments` or `content` (expandable). |
 | `media[]` | no | `{"type": "audio" \| "image", "src": "media/…", "label"}`. `src` must be inside the task's `media/` directory. Audio is served with Range support. |
 | `stratum` | no | Sampling bucket (e.g. a model-score band or a disagreement class). Hidden while blind because it usually encodes the answer. Name a stratum `random` for an unbiased sample. |
@@ -282,6 +282,10 @@ least 900 px wide, stacked on a phone), and does the comparison for the reviewer
 | `variants[].id` | Required, unique: the letter shown in the badge and the comment anchor. |
 | `variants[].text` | Required string (may be empty for "no output"). Line breaks are kept. |
 | `variants[].label`, `note` | Optional caption next to the badge. Never put the model name here while the task is blind; use `hidden.letters`. |
+
+The versions always lead the card. Orientation the reviewer needs before comparing (an outline, the
+prompt both versions answered) goes in the item's `summary`, shown open under the columns, or in
+`context[]`; the raw material (a transcript) goes in `context[]`.
 
 Assign letters with [`letters.js`](#variant-letters) so no variant sits under the
 same letter too often. Per-variant ticks ("A good enough") are ordinary `fields`
