@@ -11,11 +11,12 @@ import * as yaml from "js-yaml";
 import { normalizeWaves } from "./waves.js";
 import { proposalProblems } from "./proposal.js";
 import { pairProblems } from "./pair.js";
+import { variantsProblems } from "./variants.js";
 import { httpUrl, shown } from "./url.js";
 import { normalizeCommentTags } from "./comments.js";
 import { normalizeLifecycle, normalizePurpose, ARCHIVE_DIR } from "./lifecycle.js";
 
-export const CONTENT_TYPES = new Set(["transcript", "markdown", "text", "proposal", "pair", "speaker_group"]);
+export const CONTENT_TYPES = new Set(["transcript", "markdown", "text", "proposal", "pair", "variants", "speaker_group"]);
 export const FIELD_TYPES = new Set(["checkbox", "choice", "text"]);
 // Keys the shared keyboard model owns in label mode; a task may not bind them.
 export const RESERVED_KEYS = new Set(["j", "k", "u", "n", "e", "?", "/", " ", "arrowleft", "arrowright", "escape", "enter"]);
@@ -123,6 +124,7 @@ export function normalizeTask(raw, dirName) {
       keyOwner.set(out.key, `field ${out.id}`);
       if (type !== "checkbox") warnings.push(`field '${out.id}': only checkbox fields use a key`);
     }
+    if (f.variant != null) out.variant = String(f.variant);
     t.fields.push(out);
   }
 
@@ -158,11 +160,12 @@ export function parseItems(text, task) {
     seen.add(it.id);
     const c = it.content;
     if (!c || typeof c !== "object") warnings.push(`${it.id}: no content`);
-    else if (!CONTENT_TYPES.has(c.type)) warnings.push(`${it.id}: unknown content.type '${c.type}' (want transcript|markdown|text|proposal|pair)`);
+    else if (!CONTENT_TYPES.has(c.type)) warnings.push(`${it.id}: unknown content.type '${c.type}' (want transcript|markdown|text|proposal|pair|variants)`);
     else if (c.type === "transcript" && !Array.isArray(c.segments)) warnings.push(`${it.id}: transcript content needs a segments list`);
     else if (c.type === "proposal") for (const p of proposalProblems(c)) warnings.push(`${it.id}: ${p}`);
     else if (c.type === "pair") for (const p of pairProblems(c)) warnings.push(`${it.id}: ${p}`);
-    else if (!["transcript", "speaker_group"].includes(c.type) && typeof c.body !== "string") warnings.push(`${it.id}: ${c.type} content needs a body string`);
+    else if (c.type === "variants") for (const p of variantsProblems(c)) warnings.push(`${it.id}: ${p}`);
+    else if (!["transcript", "speaker_group", "variants"].includes(c.type) && typeof c.body !== "string") warnings.push(`${it.id}: ${c.type} content needs a body string`);
     // A permalink to the item's source, shown as a link on the card: http(s) only.
     if (it.url != null && !httpUrl(it.url)) warnings.push(`${it.id}: url must be an http(s) URL (got '${shown(it.url)}'); it will not be shown as a link`);
     if (it.hidden != null && (typeof it.hidden !== "object" || Array.isArray(it.hidden))) warnings.push(`${it.id}: hidden must be a mapping`);

@@ -96,3 +96,17 @@ test("the page ships the phone layout: safe areas, 16px fields, and the helpers 
   assert.match(css, /env\(safe-area-inset-bottom\)/);
   assert.doesNotMatch(css, /^\.note \{/m, "the label note style is scoped, not a bare .note");
 });
+
+test("summaryPlacement: a comparison always leads the card, a transcript sits behind its summary", () => {
+  const withSummary = (type) => ({ summary: "outline", content: { type } });
+  assert.equal(V.summaryPlacement("first", withSummary("transcript")), "lead");
+  assert.equal(V.summaryPlacement("first", withSummary("markdown")), "lead");
+  for (const type of ["variants", "pair", "proposal"]) {
+    assert.equal(V.summaryPlacement("first", withSummary(type)), "below", `${type} must not be tucked under Details`);
+    assert.equal(V.summaryPlacement("open", withSummary(type)), "below");
+    assert.equal(V.summaryPlacement("collapsed", withSummary(type)), "collapsed");
+  }
+  assert.equal(V.summaryPlacement("open", withSummary("transcript")), "below");
+  assert.equal(V.summaryPlacement("collapsed", withSummary("transcript")), "collapsed");
+  assert.equal(V.summaryPlacement("first", { content: { type: "variants" } }), null);
+});

@@ -32,6 +32,9 @@ const waves = () => L.data?.waves || null;
 const unitName = () => (waves() ? "Wave" : "Round");
 const roundIds = () => L.rounds[L.roundIdx]?.ids || [];
 const currentId = () => roundIds()[L.pos] || null;
+// A field with `variant: B` belongs to version B of a `variants` item and is shown
+// (and its key works) only on cards that have that version.
+const fieldShown = (f, item) => f.variant == null || !!item?.content?.variants?.some((v) => String(v.id) === String(f.variant));
 const labelOf = (id) => L.index.get(id)?.label ?? null;
 const labelDef = (id) => L.task?.labels.find((l) => l.id === id) || null;
 const labeledCount = () => [...L.index.values()].filter((r) => r.label != null).length;
@@ -386,6 +389,7 @@ function contentEl(c, audioRef) {
     el("div", { class: "cm-block cm-section", "data-anchor": sec.anchor, html: md(sec.md) })));
   if (c.type === "proposal") return proposalEl(c);
   if (c.type === "pair") return pairEl(c);
+  if (c.type === "variants") return variantsEl(c);
   return el("div", { class: "plain doc cm-block", "data-anchor": "body" }, String(c.body ?? ""));
 }
 
@@ -574,6 +578,49 @@ function proposalEl(c) {
           terms.some((t) => t.side === "after") ? el("mark", { class: "hl hl-after" }, "new value") : null) : null),
       evidence.map((e, j) => evidenceEl(e || {}, mark, j))) : null,
     policyEl(c));
+}
+
+/* ---------- variants: 2-6 versions of the same thing, side by side ----------
+   One column per version under its letter, aligned so the reader scans across.
+   Words that fewer than half of the other versions say at that point are marked
+   (a toggle turns the marks off, remembered per task); a version with exactly the
+   same words as another says so. Each column is its own commentable block,
+   anchored by the variant id (so a comment on "B" resolves to B's model). */
+const VAR_COLORS = 6;
+const varMarkGet = () => store.get(`varmark:${L.taskId}`, "on") !== "off";
+
+function variantsEl(c) {
+  const V = globalThis.VariantsLogic;
+  const vs = (Array.isArray(c.variants) ? c.variants : []).filter((v) => v && v.id != null);
+  if (!vs.length) return el("div", { class: "empty-seg" }, "(variants content needs at least one variant)");
+  const info = V.analyze(vs.map((v) => ({ id: String(v.id), text: String(v.text ?? "") })));
+  let mark = varMarkGet();
+  const grid = el("div", { class: `var-grid n${Math.min(vs.length, 4)}` });
+  const toggle = el("button", { class: "var-toggle", type: "button", "aria-pressed": String(mark), tabindex: "-1" });
+  const paint = () => {
+    toggle.textContent = mark ? "Differences marked" : "Mark differences";
+    toggle.setAttribute("aria-pressed", String(mark));
+    grid.replaceChildren(...vs.map((v, i) => {
+      const a = info[i], id = String(v.id);
+      const text = String(v.text ?? "");
+      const body = text.trim()
+        ? V.runs(a.pieces).map((r) => (mark && r.odd ? el("mark", { class: "vd" }, r.text) : r.text))
+        : [el("span", { class: "var-empty" }, "(nothing transcribed)")];
+      return el("section", { class: `var-col vc${i % VAR_COLORS}`, "aria-label": `Version ${id}` },
+        el("header", { class: "var-head" },
+          el("span", { class: "pbadge vbadge" }, id),
+          v.label && v.label !== id ? el("span", { class: "var-label" }, v.label) : null,
+          v.note ? el("span", { class: "var-note" }, v.note) : null,
+          a.same.length ? el("span", { class: "var-same", title: "exactly the same words, ignoring punctuation and case" }, `same words as ${a.same.join(", ")}`) : null),
+        el("div", { class: "var-text cm-block", "data-anchor": id }, body),
+        el("footer", { class: "var-foot" }, `${a.words} word${a.words === 1 ? "" : "s"}`));
+    }));
+  };
+  toggle.onclick = () => { mark = !mark; store.set(`varmark:${L.taskId}`, mark ? "on" : "off"); paint(); };
+  paint();
+  return el("div", { class: "variants" },
+    vs.length > 1 ? el("div", { class: "var-bar" }, toggle, el("span", { class: "var-legend" }, el("mark", { class: "vd" }, "marked"), " = most other versions do not have this")) : null,
+    grid);
 }
 
 /* ---------- pair: two sides on one time axis, "are these the same thing?" ----------
@@ -862,9 +909,12 @@ function cardEl(entry) {
   const t = L.task;
   const { node: media, audio } = mediaEl(item);
   // The summary is markdown. With `summary: first` it leads the card, open, and the
-  // content (transcript, audio) becomes optional context below it, collapsed.
-  const first = t.summary === "first" && !!item.summary;
-  const summary = item.summary ? el("details", { class: `summary${first ? " summary-first" : ""}`, open: t.summary === "open" || first },
+  // content (transcript, audio) becomes optional context below it, collapsed. Content
+  // that is itself being judged (variants, pair, proposal) is never collapsed: it
+  // leads and the summary sits open under it (ViewLogic.summaryPlacement).
+  const place = ViewLogic.summaryPlacement(t.summary, item);
+  const first = place === "lead";
+  const summary = item.summary ? el("details", { class: `summary${first ? " summary-first" : ""}`, open: place !== "collapsed" },
     el("summary", {}, "Summary", el("span", { class: "hint" }, " — written by a model from this transcript; it can make a fragment look meaningful")),
     el("div", { class: "prose cm-block", "data-anchor": "summary", html: md(item.summary) })) : null;
   const segs = item.content?.type === "transcript" ? (item.content.segments || []).length : 0;
@@ -911,7 +961,7 @@ function actionBar(entry) {
     el("button", { class: `choice tone-${toneOf(l)}${cur === l.id ? " sel" : ""}`, type: "button", "data-label": l.id, tabindex: "-1",
       onclick: () => pick(l.id) }, el("span", {}, l.label), l.key ? enter(l.key) : null)));
 
-  const fieldEls = t.fields.map((f) => {
+  const fieldEls = t.fields.filter((f) => fieldShown(f, item)).map((f) => {
     if (f.type === "checkbox") {
       const on = Boolean(fields[f.id]);
       return el("button", { class: `field-toggle${on ? " on" : ""}`, type: "button", tabindex: "-1", "aria-pressed": String(on), onclick: () => toggleField(f.id) },
@@ -1760,7 +1810,7 @@ App.keyHandlers.label = (e) => {
   if (k === "Enter" && L.suggestions?.[currentId()]) { pick(L.suggestions[currentId()].label,"suggested-accepted"); return true; }
   const l = L.task.labels.find((x) => x.key === lk);
   if (l) { pick(l.id); return true; }
-  const f = L.task.fields.find((x) => x.key === lk && x.type === "checkbox");
+  const f = L.task.fields.find((x) => x.key === lk && x.type === "checkbox" && fieldShown(x, L.cache.get(currentId())?.item));
   if (f) { toggleField(f.id); return true; }
   if (k === "s" && !keys.has("s")) { skipForNow(); return true; }
   if (k === "j" || k === "ArrowRight") { step(1); return true; }

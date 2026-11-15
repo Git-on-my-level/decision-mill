@@ -101,6 +101,23 @@ function disclosureStore(storage, prefix = "dm:disc:") {
 // Auto-growing one-line textarea: the height for a given content height.
 const growHeight = (scrollHeight, { min = 0, max = 200 } = {}) => Math.max(min, Math.min(max, Math.ceil(scrollHeight)));
 
-const api = { classifyNote, splitNotes, isDecided, collapsedByDefault, decidedSummary, itemFacts, stepIndex, nextPending, swipeDirection, disclosureStore, growHeight };
+// Where a label card puts its summary. With the task's `summary: first`, a summary
+// leads the card and the content is tucked under a toggle. That is right when the
+// content is evidence behind the summary (a transcript, plain text). It is wrong
+// when the content is the thing being judged: side-by-side variants, a pair or a
+// proposed change always lead the card, and the summary sits open below them.
+//   "lead"      summary first, content collapsed under it
+//   "below"     content first, summary open under it
+//   "collapsed" content first, summary behind a toggle
+//   null        the item has no summary
+const JUDGED_CONTENT = new Set(["variants", "pair", "proposal"]);
+const summaryPlacement = (mode, item) => {
+  if (!item || !item.summary) return null;
+  const judged = JUDGED_CONTENT.has(item.content && item.content.type);
+  if (mode === "first") return judged ? "below" : "lead";
+  return mode === "open" ? "below" : "collapsed";
+};
+
+const api = { summaryPlacement, classifyNote, splitNotes, isDecided, collapsedByDefault, decidedSummary, itemFacts, stepIndex, nextPending, swipeDirection, disclosureStore, growHeight };
 globalThis.ViewLogic = api;
 })();

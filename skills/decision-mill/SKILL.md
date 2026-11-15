@@ -78,6 +78,11 @@ Rules that matter (each came from a real labeling session):
 11. **Ask for line comments in the round instructions** — e.g. "select the words
     that made the call and press `c`; tag wrong names, missing points,
     hallucinations". A winner label alone carries little signal; comments say why.
+12. **Comparing 2 to 6 versions of the same text (transcripts, notes)? Use
+    `content.type: variants`**, not `## A` markdown: the versions sit side by side with
+    differing words marked and identical versions collapsed to "same words as", which
+    is much faster to judge (`LABELS.md#variants-side-by-side`). The versions lead the card; put
+    orientation in the item `summary` (shown under them) and the transcript in `context[]`.
 
 ## Launch
 

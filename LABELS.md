@@ -103,12 +103,12 @@ One JSON object per line:
 | Key | Required | Meaning |
 | --- | -------- | ------- |
 | `id` | yes | Unique string. Labels reference it forever; never reuse one. |
-| `content` | yes | `{"type": "transcript", "segments": [...]}`, `{"type": "markdown", "body": "…"}`, `{"type": "text", "body": "…"}`, `{"type": "proposal", …}` (a proposed edit to judge; see [Proposal items](#proposal-items)), or `{"type": "pair", …}` (two sides to compare on one time axis; see [Pair items](#pair-items)). |
+| `content` | yes | `{"type": "transcript", "segments": [...]}`, `{"type": "markdown", "body": "…"}`, `{"type": "text", "body": "…"}`, `{"type": "proposal", …}` (a proposed edit to judge; see [Proposal items](#proposal-items)), or `{"type": "pair", …}` (two sides to compare on one time axis; see [Pair items](#pair-items)), or `{"type": "variants", …}` (1 to 6 versions of the same thing in aligned columns; see [Variants side by side](#variants-side-by-side)). |
 | `segments[]` | — | `speaker`, `is_user` (styled as the reviewer), `start` seconds (shown as a timestamp; clickable when audio exists), `text`, optional `name` (display name). |
 | `title` | no | Shown above the content. |
 | `url` | no | Permalink to where the item came from (the pull request, doc, thread or dashboard). Shown as a quiet "Source ↗" link at the right of the title row, opening in a new tab. Only `http:`/`https:` URLs become links; anything else is not shown, and the validator warns. Visible even when blind, and left out of search text and stand-in briefs. |
 | `meta` | no | Shown as chips on the card (only the keys in `meta_display`). **Always visible, even when blind — never put model output here.** |
-| `summary` | no | Markdown, labeled as model-written (a summary can make a fragment look meaningful). By default (task `summary: first`) it leads the card, open, and the content (transcript, audio) is collapsed below it as optional context, so the reviewer judges from the summary and checks the transcript when needed. `summary: open` keeps the content first with the summary open below it; `summary: collapsed` hides it behind a toggle (use that when a summary would bias the judgment, e.g. keep/noise on raw fragments). |
+| `summary` | no | Markdown, labeled as model-written (a summary can make a fragment look meaningful). By default (task `summary: first`) it leads the card, open, and the content (transcript, audio) is collapsed below it as optional context, so the reviewer judges from the summary and checks the transcript when needed. Content that is itself being judged (`variants`, `pair`, `proposal`) is never collapsed: it always leads the card and the summary sits open below it, whatever the task says. `summary: open` keeps the content first with the summary open below it; `summary: collapsed` hides it behind a toggle (use that when a summary would bias the judgment, e.g. keep/noise on raw fragments). |
 | `context[]` | no | Neighboring items so the reviewer is not judging a snippet. `relation` is `before` / `after` / `overlapping`, `gap_min` minutes, `title`, `summary`, and optionally `segments` or `content` (expandable). |
 | `media[]` | no | `{"type": "audio" \| "image", "src": "media/…", "label"}`. `src` must be inside the task's `media/` directory. Audio is served with Range support. |
 | `stratum` | no | Sampling bucket (e.g. a model-score band or a disagreement class). Hidden while blind because it usually encodes the answer. Name a stratum `random` for an unbiased sample. |
@@ -245,6 +245,55 @@ It keeps every other key (`id`, `stratum`, `title`, `meta`, `summary`, `hidden`,
 `truncated`, …), so existing labels stay attached; items that do not follow the
 convention pass through unchanged. It never rewrites its input: check the new
 file, then swap it in yourself.
+
+## Variants side by side
+
+Use `content.type: variants` when the reviewer must compare **2 to 6 versions of
+the same thing** (a single version is allowed, e.g. when every engine said the same;
+nothing is marked then) and reading them one under another makes the comparison hard:
+transcripts of one clip from different engines, notes from different models. The
+card puts them in aligned columns under their letters (four across on a screen at
+least 900 px wide, stacked on a phone), and does the comparison for the reviewer:
+
+- **Marked words.** Each version is aligned with every other by longest common
+  subsequence; a word that fewer than half of the other versions say at that
+  point is marked. With three versions where one says "Miro" and two say
+  "Mirexu", "Miro" is marked; with two versions each difference is marked on both.
+  Spaceless scripts (Japanese, Chinese, Thai, …) compare per character. A toggle
+  above the columns turns marks off; the choice is remembered per task.
+- **Same words.** A version whose words are exactly those of another (ignoring
+  case and punctuation) says so in its header, so duplicate outputs cost no
+  reading. An empty `text` shows "(nothing transcribed)", which is itself an answer.
+- **Comments.** Each column is its own commentable block anchored by the variant
+  `id`, so a comment on "B" resolves to B's model exactly as for `## B` markdown.
+
+```json
+{"id": "clip-01", "title": "Glaze order call", "meta": {"duration_s": 14},
+ "media": [{"type": "audio", "src": "media/clip-01.m4a", "label": "Audio"}],
+ "content": {"type": "variants", "variants": [
+   {"id": "A", "text": "We need to move the glaze order to Thursday and call Mirexu."},
+   {"id": "B", "text": "We need to move the glaze order to Thursday and call Miro.", "note": "optional caption"},
+   {"id": "C", "text": ""}]},
+ "hidden": {"letters": {"A": "fern", "B": "moss", "C": "reed"}}}
+```
+
+| Key | Meaning |
+| --- | ------- |
+| `variants[].id` | Required, unique: the letter shown in the badge and the comment anchor. |
+| `variants[].text` | Required string (may be empty for "no output"). Line breaks are kept. |
+| `variants[].label`, `note` | Optional caption next to the badge. Never put the model name here while the task is blind; use `hidden.letters`. |
+
+The versions always lead the card. Orientation the reviewer needs before comparing (an outline, the
+prompt both versions answered) goes in the item's `summary`, shown open under the columns, or in
+`context[]`; the raw material (a transcript) goes in `context[]`.
+
+Assign letters with [`letters.js`](#variant-letters) so no variant sits under the
+same letter too often. Per-variant ticks ("A good enough") are ordinary `fields`
+checkboxes named `usable_A`, `usable_B`, … with `variant: A` (…): a field with
+`variant` is shown, and its key works, only on cards that have that version, so a
+two-version card does not offer a box for C. Map them back through `hidden.letters`
+when reading labels. `examples/labels/variants-asr-demo/` is a fictional task: four
+invented engines transcribing one clip, including an empty output and a Japanese clip.
 
 ## labels/\<reviewer\>.jsonl
 
